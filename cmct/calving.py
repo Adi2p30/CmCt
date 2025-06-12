@@ -57,7 +57,13 @@ class GSFCcalving:
         self.sftgif = self.ds["sftgif"]
         self.x = self.ds["x"]
         self.y = self.ds["y"]
-
+        
+        self.x_min = self.x.min().item()
+        self.x_max = self.x.max().item()
+        
+        self.y_min = self.y.min().item()
+        self.y_max = self.y.max().item()
+        
     def close(self):
         self.ds.close()
 
@@ -84,3 +90,67 @@ def calc_obs_delta_cmwe(obs, start_date, end_date):
 
     return obs.cmwe[:, i_1] - obs.cmwe[:, i_0]
 
+
+# Currentlty not implemented, not required.
+def match_resolution(obs, res):
+    #TODO: Future Implementation
+    """
+    Match the resolution of the observation data to the specified resolution.
+
+    Parameters
+    ----------
+    obs : xarray.Dataset
+        The observation dataset.
+    res : str
+        The desired resolution (e.g., '1km', '5km').
+
+    Returns
+    -------
+    xarray.Dataset
+        The observation dataset with matched resolution.
+    """
+    if res == "1km":
+        return obs.coarsen(lat=10, lon=10).mean()
+    elif res == "5km":
+        return obs.coarsen(lat=50, lon=50).mean()
+    else:
+        raise ValueError(f"Unsupported resolution: {res}")
+    
+    
+def find_absolute_calving(gsfc, start_date, end_date):
+    """
+    Find absolute calving data within a specified date range.
+
+    Parameters
+    ----------
+    gsfc : GSFCcalving
+        The GSFC calving data object.
+    start_date : str
+        Start date in 'YYYY-MM-DD' format.
+    end_date : str
+        End date in 'YYYY-MM-DD' format.
+
+    Returns
+    -------
+    xarray.Dataset
+        The absolute calving data within the specified date range.
+    """
+    if not check_datarange(gsfc.time, start_date, end_date):
+        raise ValueError("Date range is outside the available data range.")
+
+    global min_lat
+    global min_lon
+    
+    global max_lat
+    global max_lon
+
+    
+    
+    # Convert dates to numpy datetime64
+    t_start = np.datetime64(start_date)
+    t_end = np.datetime64(end_date)
+
+    # Filter the dataset based on time
+    mask = (gsfc.time >= t_start) & (gsfc.time <= t_end)
+    
+    return gsfc.ds.sel(time=mask)
