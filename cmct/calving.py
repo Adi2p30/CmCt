@@ -18,7 +18,11 @@ from .time_utils import check_datarange
 rc("mathtext", default="regular")
 
 
-def load_gsfc_calving(filepath):
+ded load_gsfc_calving(filepath):
+
+
+
+def load_model_calving(filepath):
     """
     Load GSFC calving data from an nc file.
 
@@ -35,7 +39,7 @@ def load_gsfc_calving(filepath):
     """
     
     try:
-        gsfc = GSFCcalving(filepath)
+        gsfc = Modelcalving(filepath)
     except Exception as error:
         print("Error: Failed to load GSFC dataset.")
         print(error)
@@ -44,7 +48,7 @@ def load_gsfc_calving(filepath):
 
 
 
-class GSFCcalving:
+class Modelcalving:
     def __init__(self, nc_path):
         # Open as xarray Dataset
         self.ds = xr.open_dataset(nc_path)

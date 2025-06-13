@@ -185,4 +185,5 @@ cython_debug/
 
 # Specific Data files
 data/calving
+test/calving
 
