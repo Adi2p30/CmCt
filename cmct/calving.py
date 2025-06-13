@@ -58,6 +58,8 @@ class GSFCcalving:
         self.x = self.ds["x"]
         self.y = self.ds["y"]
         
+        
+        
         self.x_min = self.x.min().item()
         self.x_max = self.x.max().item()
         

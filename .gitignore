@@ -182,3 +182,7 @@ cython_debug/
 *.out
 *.app
 *_main
+
+# Specific Data files
+data/sftgif_GIS_JPL_ISSM_historical.nc
+
