@@ -184,5 +184,5 @@ cython_debug/
 *_main
 
 # Specific Data files
-data/sftgif_GIS_JPL_ISSM_historical.nc
+data/calving/sftgif_GIS_JPL_ISSM_historical.nc
 
