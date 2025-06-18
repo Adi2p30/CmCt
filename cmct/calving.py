@@ -11,14 +11,42 @@ import matplotlib.pyplot as plt
 import netCDF4 as nc
 import numpy as np
 import xarray as xr
+import logging
 from matplotlib import rc
 from shapely.geometry import Point
-from .time_utils import check_datarange
-
+# from .time_utils import check_datarange
 rc("mathtext", default="regular")
 
 
-ded load_gsfc_calving(filepath):
+def load_gsfc_calving(filepath):
+    """
+    Load GSFC calving data from an nc file.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the netCDF file containing the calving data.
+
+    Returns
+    -------
+    Modelcalving
+        An instance of the Modelcalving class with the loaded data.
+        
+    """
+    
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"File not found: {filepath}")
+    
+    try:    
+        gsfc = GSFCcalving(filepath)
+        
+    except Exception as error:
+        print("Error: Failed to load GSFC dataset.")
+        print(error)
+        gsfc = None
+        raise ValueError("Failed to load GSFC calving data.")
+        
+    return gsfc
 
 
 
@@ -39,62 +67,130 @@ def load_model_calving(filepath):
     """
     
     try:
-        gsfc = Modelcalving(filepath)
+        model_res = Modelcalving(filepath)
     except Exception as error:
-        print("Error: Failed to load GSFC dataset.")
+        print("Error: Failed to load Model dataset.")
         print(error)
-        gsfc = None
-    return gsfc
+        model_res = None
+    return model_res
 
+class GSFCcalving:
+    def __init__(self, nc_path):
+        # Open as xarray Dataset
+        self.ds = xr.open_dataset(nc_path, autoclose=True, engine='netcdf4',use_cftime=True)
+        self.ds["ice_mask"] = self.ds["ice_mask"] / 100
+        # Direct access to variables as attributes
+    @property
+    def time(self):
+        return self.ds["year"]
 
+    @property
+    def ice_mask(self):
+        return self.ds["ice_mask"]
 
+    @property
+    def x(self):
+        return self.ds["x"]
+
+    @property
+    def y(self):
+        return self.ds["y"]
+
+    # def _set_times_as_datetimes(self, days):
+    #     return np.datetime64('2002-01-01T00:00:00') + np.array([int(d*24) for d in days], dtype='timedelta64[h]')
+    
+    
 class Modelcalving:
     def __init__(self, nc_path):
         # Open as xarray Dataset
-        self.ds = xr.open_dataset(nc_path)
-        # Direct access to variables as attributes
-        self.lat = self.ds["lat"]
-        self.lat_bnds = self.ds["lat_bnds"]
-        self.lon = self.ds["lon"]
-        self.lon_bnds = self.ds["lon_bnds"]
-        self.time = self.ds["time"]
-        self.sftgif = self.ds["sftgif"]
-        self.x = self.ds["x"]
-        self.y = self.ds["y"]
+        self.ds = xr.open_dataset(nc_path, autoclose=True, engine='netcdf4',use_cftime=True)
+            # Direct access to variables as attributes
+    
+    @property
+    def x(self):
+        return self.ds["x"]
+    
+    @property
+    def y(self):
+        return self.ds["y"]
+
+    @property
+    def lat(self):
+        return self.ds["lat"]
+    
+    @property
+    def lon(self):
+        return self.ds["lon"]
+    
+    # @property
+    # def lat_bnds(self):
+    #     return self.ds["lat_bnds"]
+    
+    # @property
+    # def lon_bnds(self):
+    #     return self.ds["lon_bnds"]
+    
+    @property
+    def sftgif(self):
+        return self.ds["sftgif"]
+    
+    @property
+    def time(self):
+        return self.ds["time"]
         
-        
-        
-        self.x_min = self.x.min().item()
-        self.x_max = self.x.max().item()
-        
-        self.y_min = self.y.min().item()
-        self.y_max = self.y.max().item()
+    # def _set_times_as_datetimes(self, days):
+    #     return np.datetime64('2002-01-01T00:00:00') + np.array([int(d*24) for d in days], dtype='timedelta64[h]')
+    
         
     def close(self):
         self.ds.close()
-
-    def _set_times_as_datetimes(self, days):
-        return np.datetime64("2002-01-01T00:00:00") + np.array(
-            [int(d * 24) for d in days], dtype="timedelta64[h]"
-        )
 
     def print_info(self):
         print("GSFC Calving Data:")
         print(f"Latitude: {self.lat.values}")
         print(f"Longitude: {self.lon.values}")
-        print(f"Time: {self._set_times_as_datetimes(self.time.values)}")
+        print(f"Time: {self.time.values}")
         print(f"SFTGIF: {self.sftgif.values}")
         print(f"X coordinates: {self.x.values}")
         print(f"Y coordinates: {self.y.values}")
+        
+        
+        
+        
+def convert_to_standard_datetime(time_var):
+    """
+    Convert a time variable to a standard datetime string format.
+    Parameters
+    ----------
+    time_var : xarray.DataArray
+        The time variable to convert.
+    Returns
+    -------
+    str
+        The time variable in 'YYYY-MM-DDTHH:MM:SS' format.
+    """
 
-def calc_obs_delta_cmwe(obs, start_date, end_date):
-    t_0 = np.datetime64(start_date)
-    t_1 = np.datetime64(end_date)
+    return time_var.dt.strftime('%Y-%m-%dT%H:%M:%S')
 
-    i_0 = np.abs(obs.times_start - t_0).argmin()
-    i_1 = np.abs(obs.times_end - t_1).argmin()
 
-    return obs.cmwe[:, i_1] - obs.cmwe[:, i_0]
+def check_data_daterange(gsfc_time: list, model_time: list, start_date: int, end_date: int):
+    print(type(gsfc_time), type(model_time), type(start_date), type(end_date))
+    
+    gsfc_time.sort()
+    gsfc_time_min = gsfc_time[0]
+    gsfc_time_max = gsfc_time[-1]
+    
+    model_time.sort()
+    model_time_min = model_time[0]
+    model_time_max = model_time[-1]
+
+    minimum_time = max(gsfc_time_min, model_time_min)
+    maximum_time = min(gsfc_time_max, model_time_max)
+
+    if not (minimum_time <= start_date <= end_date and start_date <= end_date <= maximum_time):
+        raise ValueError(f"Date range {start_date} to {end_date} is outside the available data range: {minimum_time} to {maximum_time}.")
+    else: 
+        print(f"The selected dates {start_date} and {end_date} are within the range of the model data. These are accepted.")
 
 
 # Currentlty not implemented, not required.
@@ -123,40 +219,70 @@ def match_resolution(obs, res):
         raise ValueError(f"Unsupported resolution: {res}")
     
     
-def find_absolute_calving(gsfc, start_date, end_date):
-    """
-    Find absolute calving data within a specified date range.
-
-    Parameters
-    ----------
-    gsfc : GSFCcalving
-        The GSFC calving data object.
-    start_date : str
-        Start date in 'YYYY-MM-DD' format.
-    end_date : str
-        End date in 'YYYY-MM-DD' format.
-
-    Returns
-    -------
-    xarray.Dataset
-        The absolute calving data within the specified date range.
-    """
-    if not check_datarange(gsfc.time, start_date, end_date):
-        raise ValueError("Date range is outside the available data range.")
-
-    global min_lat
-    global min_lon
     
-    global max_lat
-    global max_lon
 
-    
-    
-    # Convert dates to numpy datetime64
-    t_start = np.datetime64(start_date)
-    t_end = np.datetime64(end_date)
+def find_absolute_calving_per_year(gsfc, model, year):
+   """
+   Find absolute calving data for a specified year.
 
-    # Filter the dataset based on time
-    mask = (gsfc.time >= t_start) & (gsfc.time <= t_end)
-    
-    return gsfc.ds.sel(time=mask)
+   Parameters
+   ----------
+   gsfc : GSFCcalving
+       The GSFC calving data object.
+   model : ModelCalving
+       The model calving data object.
+   year : int
+       The year for which to find absolute calving data.
+
+   Returns
+   -------
+   xarray.Dataset
+       The absolute calving data for the specified year.
+   """
+   logging.info(f"Finding absolute calving data for year {year}")
+   
+   gsfc_year = gsfc.ds.sel(year=year)
+   model_year = model.ds.sel(time=year)
+   logging.info(f"Selected data for year {year} from both datasets")
+
+   if gsfc_year is None or model_year is None:
+       logging.error(f"No data available for the year {year} in either GSFC or model datasets")
+       raise ValueError(f"No data available for the year {year} in either GSFC or model datasets.")
+   
+   else:
+       logging.info("Starting to process grid points")
+       calving_data_list = []
+       processed_points = 0
+       valid_points = 0
+       agg_residual = 0
+       sq_agg_residual = 0
+       
+       for x in model_year.x.values:
+           for y in model_year.y.values:
+               processed_points += 1
+               if np.isnan(gsfc_year.ice_mask.sel(x=x, y=y).values) or np.isnan(model_year.sftgif.sel(x=x, y=y).values):
+                   continue
+               else:
+                   valid_points += 1
+                   residual = round(float(gsfc_year.ice_mask.sel(x=x, y=y).values - model_year.sftgif.sel(x=x, y=y).values), 3)
+                   agg_residual += abs(residual)
+                   sq_agg_residual += residual ** 2
+                   calving_data = {
+                       
+                       'x': round(float(x), 3),
+                       'y': round(float(y), 3),
+                       'gsfc_ice_mask': round(float(gsfc_year.ice_mask.sel(x=x, y=y).values), 3),
+                       'model_sftgif': round(float(model_year.sftgif.sel(x=x, y=y).values), 3),
+                       'residual':  residual
+                   }
+                   calving_data_list.append(calving_data)
+        
+       
+       RMS = (sq_agg_residual/valid_points)**(1/2)
+
+
+       statistical_analyses = {"AVG_RESIDUAL": round(agg_residual/valid_points, 3), "RMS_RESIDUAL": round(RMS, 3), "VALID_POINTS": valid_points, "PROCESSED_POINTS": processed_points}
+       
+       logging.info(f"Processed {processed_points} grid points, found {valid_points} valid points")
+       logging.info(f"Returning {len(calving_data_list)} calving data records")
+       return calving_data_list, statistical_analyses
