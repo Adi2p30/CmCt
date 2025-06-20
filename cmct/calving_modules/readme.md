@@ -1,4 +1,14 @@
 # Calving - Aditya 
+
+## Installation
+To download 
+
+you will need to do pip install pangeo-xesmf 
+to install xesmf
+
+xesmf has been used for its regridder and to use conservative regridding.
+
+
 Format of data:
 
 ## ice_mask: ice_mask, annual mean percentage ice cover,

@@ -5,16 +5,21 @@ import sys
 import netCDF4 as nc
 import os 
 import logging
+from PIL import Image
+import numpy as np
+# import xesmf as xe
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 class Resampling:
-    def __init__(self, input_data, target_data=None, target_resolution=None):
+    def __init__(self, input_data, target_data=None, target_resolution=None, interpolation_method='linear'):
         self.input_data = input_data
         self.target_data = target_data
         self.target_resolution = target_resolution
         self.logger = logging.getLogger(self.__class__.__name__)
+        self.interpolation_method = interpolation_method
             
     def resample(self):
         """
@@ -45,8 +50,57 @@ class Resampling:
             
             target_x = np.linspace(obs_x.min(), obs_x.max(), self.target_resolution[0])
             target_y = np.linspace(obs_y.min(), obs_y.max(), self.target_resolution[1])
-            ds_resampled = input_ds.interp(x=target_x, y=target_y, method='linear')
             
+            if self.interpolation_method == 'linear':
+                """
+                Use case: Fast processing needed 
+                """
+                self.logger.info("Performing linear interpolation...")
+                ds_resampled = input_ds.interp(x=target_x, y=target_y, method='linear')
+                
+            elif self.interpolation_method == 'nearest':
+                """
+                Use case: Fast processing, When the target grid is sparse or irregular, nearest neighbor interpolation can be more appropriate.
+                """
+                self.logger.info("Performing nearest neighbor interpolation...")
+                ds_resampled = input_ds.interp(x=target_x, y=target_y, method='nearest')
+
+            elif self.interpolation_method == 'makima':
+                """
+                Use case: When the target grid is dense and you want to preserve the shape of the data, Makima interpolation can be used.
+                """
+                self.logger.info("Performing Makima interpolation...")
+                ds_resampled = input_ds.interp(x=target_x, y=target_y, method='makima')
+                
+            elif self.interpolation_method == 'pchip':
+                """
+                Physical data, no overshoot.
+                Use case: When the target grid is dense and you want to preserve the shape of the data without overshooting, PCHIP interpolation can be used.
+                """
+                self.logger.info("Performing cubic interpolation...")
+                ds_resampled = input_ds.interp(x=target_x, y=target_y, method='pchip')
+                
+            elif self.interpolation_method == 'lanczos3d':
+                """
+                Use case: Smoooooooooth
+                """
+                self.logger.info("Performing Lanczos 3D interpolation...")
+                ice_array = input_ds['ice_mask'].values
+                resized = np.array(Image.fromarray(ice_array).resize(
+                    (target_x.size, target_y.size), 
+                    Image.LANCZOS
+                ))
+                ds_resampled = xr.DataArray(resized, dims=['y', 'x'], coords={'y': target_y, 'x': target_x})
+                
+            # elif self.interpolation_method == 'conservative':
+            #     """
+            #     Use case: To preserve the total amount of ice, especially when downscaling.
+            #     """
+                
+            #     self.logger.info("Performing conservative interpolation...")
+            #     regridder = xe.Regridder(input_ds, target_ds, 'conservative')
+            #     ds_resampled = regridder(input_ds)
+
         else:
             raise ValueError("Either target_data or target_resolution must be provided for resampling.")
         
@@ -56,8 +110,7 @@ class Resampling:
             
         return ds_resampled
         
-
-# if __name__ == "__main__":
+#  __name__ == "__main__":
 #     # Setup logging for the main script
 #     logger = logging.getLogger(__name__)
     

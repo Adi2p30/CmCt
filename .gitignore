@@ -186,4 +186,7 @@ cython_debug/
 # Specific Data files
 data/calving
 test/calving
+notebooks/Calving/*.json
+notebooks/Calving/*.nc
+
 
