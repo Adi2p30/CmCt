@@ -33,7 +33,7 @@ def json_to_netcdf(json_file):
                 'x': point['x'],
                 'y': point['y'],
                 'gsfc_ice_mask': point['gsfc_ice_mask'],
-                'model_sftgif': point['model_sftgif'],
+                'model_ice_mask': point['model_ice_mask'],
                 'residual': point['residual']
             })
     
@@ -68,7 +68,7 @@ def json_to_netcdf(json_file):
         y_idx = y_coords.index(point['y'])
         
         gsfc_array[year_idx, x_idx, y_idx] = point['gsfc_ice_mask']
-        model_array[year_idx, x_idx, y_idx] = point['model_sftgif']
+        model_array[year_idx, x_idx, y_idx] = point['model_ice_mask']
         residual_array[year_idx, x_idx, y_idx] = point['residual']
     
     # Create the dataset
@@ -77,7 +77,7 @@ def json_to_netcdf(json_file):
     dataset = xr.Dataset(
         {
             'gsfc_ice_mask': (['year', 'x', 'y'], gsfc_array),
-            'model_sftgif': (['year', 'x', 'y'], model_array),
+            'model_ice_mask': (['year', 'x', 'y'], model_array),
             'residual': (['year', 'x', 'y'], residual_array)
         },
         coords={
