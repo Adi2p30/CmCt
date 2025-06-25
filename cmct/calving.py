@@ -11,6 +11,8 @@ import netCDF4 as nc
 import numpy as np
 import xarray as xr
 import logging
+from numba import jit, prange
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from matplotlib import rc
 from shapely.geometry import Point
 from multiprocessing import Pool, cpu_count
@@ -230,8 +232,8 @@ def match_resolution(obs, res):
 #--------------------
 
 """
-SIMPLE (LEGACY) -> PARALLEL (LEGACY) -> HYPER OPTIMIZED (CURRENT)
-
+SIMPLE (LEGACY) -> HYPER OPTIMIZED JSON (LEGACY) -> NO JSON JIT OPTIMIZED (CURRENT)
+=
 """
 # def find_absolute_calving_per_year(gsfc, model, year):
 #    """
@@ -564,81 +566,69 @@ SIMPLE (LEGACY) -> PARALLEL (LEGACY) -> HYPER OPTIMIZED (CURRENT)
 # HYPER-OPTIMIZED VERSION
 # HYPER-OPTIMIZED VERSION
 
-
-import numpy as np
-from numba import jit, prange
-
-# Using numba as it is the fastest, source: https://jekel.me/2017/Python-with-Numba-faster-than-fortran/
-
-import xarray as xr
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import time
-import logging
-
-
-
-@jit(nopython=True, parallel=True, cache=True)
-def compute_residuals_vectorized(gsfc_data, model_data, x_coords, y_coords, x_indices, y_indices):
-    """
-    Hyper-optimized numba JIT compiled function for residual computation.
+# @jit(nopython=True, parallel=True, cache=True)
+# def compute_residuals_vectorized(gsfc_data, model_data, x_coords, y_coords, x_indices, y_indices):
+#     """
+#     Hyper-optimized numba JIT compiled function for residual computation.
     
-    Parameters
-    ----------
-    gsfc_data : numpy.ndarray
-        2D array of GSFC ice mask data
-    model_data : numpy.ndarray 
-        2D array of model ice mask data
-    x_coords : numpy.ndarray
-        1D array of x coordinates
-    y_coords : numpy.ndarray
-        1D array of y coordinates
-    x_indices : numpy.ndarray
-        1D array of x indices for data arrays
-    y_indices : numpy.ndarray
-        1D array of y indices for data arrays
+#     Parameters
+#     ----------
+#     gsfc_data : numpy.ndarray
+#         2D array of GSFC ice mask data
+#     model_data : numpy.ndarray 
+#         2D array of model ice mask data
+#     x_coords : numpy.ndarray
+#         1D array of x coordinates
+#     y_coords : numpy.ndarray
+#         1D array of y coordinates
+#     x_indices : numpy.ndarray
+#         1D array of x indices for data arrays
+#     y_indices : numpy.ndarray
+#         1D array of y indices for data arrays
         
-    Returns
-    -------
-    tuple
-        Arrays of results: (x_vals, y_vals, gsfc_vals, model_vals, residuals, valid_mask)
-    """
-    n_x = len(x_coords)
-    n_y = len(y_coords)
-    total_points = n_x * n_y
+#     Returns
+#     -------
+#     tuple
+#         Arrays of results: (x_vals, y_vals, gsfc_vals, model_vals, residuals, valid_mask)
+#     """
+#     n_x = len(x_coords)
+#     n_y = len(y_coords)
+#     total_points = n_x * n_y
     
-    x_vals = np.empty(total_points, dtype=np.float32)
-    y_vals = np.empty(total_points, dtype=np.float32)
-    gsfc_vals = np.empty(total_points, dtype=np.float32)
-    model_vals = np.empty(total_points, dtype=np.float32)
-    residuals = np.empty(total_points, dtype=np.float32)
-    valid_mask = np.empty(total_points, dtype=np.bool_)
+#     x_vals = np.empty(total_points, dtype=np.float32)
+#     y_vals = np.empty(total_points, dtype=np.float32)
+#     gsfc_vals = np.empty(total_points, dtype=np.float32)
+#     model_vals = np.empty(total_points, dtype=np.float32)
+#     residuals = np.empty(total_points, dtype=np.float32)
+#     valid_mask = np.empty(total_points, dtype=np.bool_)
     
-    for idx in prange(total_points):
-        i = idx // n_y
-        j = idx % n_y
+#     for idx in prange(total_points):
+#         i = idx // n_y
+#         j = idx % n_y
         
-        x_coord = x_coords[i]
-        y_coord = y_coords[j]
+#         x_coord = x_coords[i]
+#         y_coord = y_coords[j]
         
-        x_idx = x_indices[i]
-        y_idx = y_indices[j]
+#         x_idx = x_indices[i]
+#         y_idx = y_indices[j]
         
-        gsfc_val = gsfc_data[y_idx, x_idx]  # Note: y first for numpy arrays
-        model_val = model_data[y_idx, x_idx]
+#         gsfc_val = gsfc_data[y_idx, x_idx]  # Note: y first for numpy arrays
+#         model_val = model_data[y_idx, x_idx]
         
         
-        # Check for valid data
-        is_valid = not (np.isnan(gsfc_val) or np.isnan(model_val))
+#         # Check for valid data
+#         is_valid = not (np.isnan(gsfc_val) or np.isnan(model_val))
         
-        x_vals[idx] = x_coord
-        y_vals[idx] = y_coord
-        gsfc_vals[idx] = gsfc_val
-        model_vals[idx] = model_val
-        residuals[idx] = gsfc_val - model_val if is_valid else np.nan
-        valid_mask[idx] = is_valid
+#         x_vals[idx] = x_coord
+#         y_vals[idx] = y_coord
+#         gsfc_vals[idx] = gsfc_val
+#         model_vals[idx] = model_val
+#         residuals[idx] = gsfc_val - model_val if is_valid else np.nan
+#         valid_mask[idx] = is_valid
     
-    return x_vals, y_vals, gsfc_vals, model_vals, residuals, valid_mask
+#     return x_vals, y_vals, gsfc_vals, model_vals, residuals, valid_mask
 
+# NOT LEGACY CURERENTLY USED
 def prepare_data_arrays(gsfc_year, model_year):
     """
     Prepare and align data arrays for optimized computation.
@@ -671,95 +661,271 @@ def prepare_data_arrays(gsfc_year, model_year):
     
     return gsfc_data, model_data, model_x, model_y, x_indices, y_indices
 
-def process_chunk_optimized(args):
+# def process_chunk_optimized(args):
+#     """
+#     Process a chunk of data using the hyper-optimized computation function.
+    
+#     Parameters
+#     ----------
+#     args : tuple
+#         (chunk_data, chunk_indices, chunk_id)
+        
+#     Returns
+#     -------
+#     tuple
+#         (results_dict_list, valid_count, abs_residual_sum, sq_residual_sum)
+#     """
+#     gsfc_data, model_data, x_coords, y_coords, x_indices, y_indices, chunk_id = args
+       
+#     # Use the JIT compiled function
+#     x_vals, y_vals, gsfc_vals, model_vals, residuals, valid_mask = compute_residuals_vectorized(
+#         gsfc_data, model_data, x_coords, y_coords, x_indices, y_indices
+#     )
+    
+#     valid_indices = np.where(valid_mask)[0]
+    
+#     # Create result dictionaries only for valid points
+#     results = []
+#     abs_residual_sum = 0.0
+#     sq_residual_sum = 0.0
+    
+#     for idx in valid_indices:
+#         residual = float(residuals[idx])
+#         result = {
+#             'x': round(float(x_vals[idx]), 3),
+#             'y': round(float(y_vals[idx]), 3),
+#             'gsfc_ice_mask': round(float(gsfc_vals[idx]), 3),
+#             'model_ice_mask': round(float(model_vals[idx]), 3),
+#             'residual': round(residual, 3)
+#         }
+#         results.append(result)
+#         abs_residual_sum += abs(residual)
+#         sq_residual_sum += residual ** 2
+    
+#     return results, len(valid_indices), abs_residual_sum, sq_residual_sum
+
+# def create_optimized_chunks(x_coords, y_coords, chunk_size=2500):
+#     """
+#     Create optimized chunks that balance memory usage and parallelization.
+    
+#     Parameters
+#     ----------
+#     x_coords : numpy.ndarray
+#         X coordinates
+#     y_coords : numpy.ndarray
+#         Y coordinates
+#     chunk_size : int
+#         Target number of points per chunk
+        
+#     Returns
+#     -------
+#     list
+#         List of (x_chunk, y_chunk) coordinate pairs
+#     """
+#     total_points = len(x_coords) * len(y_coords)
+    
+#     # Calculate optimal chunk dimensions
+#     if total_points <= chunk_size:
+#         return [(x_coords, y_coords)]
+    
+#     # Try to create roughly square chunks
+#     chunk_dim = int(np.sqrt(chunk_size))
+    
+#     chunks = []
+#     for i in range(0, len(x_coords), chunk_dim):
+#         x_chunk = x_coords[i:i + chunk_dim]
+#         for j in range(0, len(y_coords), chunk_dim):
+#             y_chunk = y_coords[j:j + chunk_dim]
+#             chunks.append((x_chunk, y_chunk))
+    
+#     return chunks
+
+# def find_absolute_calving_per_year_hyper_optimized(gsfc, model, year, num_workers=None, chunk_size=2500):
+#     """
+#     Hyper-optimized version using JIT compilation, vectorization, and smart chunking.
+    
+#     This version uses:
+#     - Numba JIT compilation for core computation
+#     - Vectorized operations instead of nested loops
+#     - Optimized memory layout and data types
+#     - Smart chunking for better cache utilization
+#     - Reduced Python overhead
+    
+#     Parameters
+#     ----------
+#     gsfc : GSFCcalving
+#         The GSFC calving data object
+#     model : ModelCalving  
+#         The model calving data object
+#     year : int
+#         The year for which to find absolute calving data
+#     num_workers : int, optional
+#         Number of worker processes. If None, uses optimal number
+#     chunk_size : int, optional
+#         Target number of points per chunk. Default is 2500
+        
+#     Returns
+#     -------
+#     tuple
+#         (calving_data_list, statistical_analyses)
+#     """
+#     start_time = time.time()
+#     logging.info(f"Starting hyper-optimized calving analysis for year {year}")
+    
+#     gsfc_year = gsfc.ds.sel(year=year)
+#     model_year = model.ds.sel(time=year)
+    
+#     if gsfc_year is None or model_year is None:
+#         raise ValueError(f"No data available for the year {year}")
+    
+#     logging.info("Preparing optimized data arrays...")
+#     gsfc_data, model_data, x_coords, y_coords, x_indices, y_indices = prepare_data_arrays(
+#         gsfc_year, model_year
+#     )
+    
+#     total_points = len(x_coords) * len(y_coords)
+#     logging.info(f"Total grid points: {total_points}")
+    
+#     #Chunking
+#     coordinate_chunks = create_optimized_chunks(x_coords, y_coords, chunk_size)
+#     logging.info(f"Created {len(coordinate_chunks)} optimized chunks")
+    
+#     chunk_args = []
+#     for i, (x_chunk, y_chunk) in enumerate(coordinate_chunks):
+#         x_start = np.searchsorted(x_coords, x_chunk[0])
+#         x_end = x_start + len(x_chunk)
+#         y_start = np.searchsorted(y_coords, y_chunk[0])
+#         y_end = y_start + len(y_chunk)
+        
+#         x_idx_chunk = x_indices[x_start:x_end]
+#         y_idx_chunk = y_indices[y_start:y_end]
+        
+#         chunk_args.append((
+#             gsfc_data, model_data, x_chunk, y_chunk, 
+#             x_idx_chunk, y_idx_chunk, i
+#         ))
+    
+#     if num_workers is None:
+#         import os
+#         num_workers = min(os.cpu_count(), len(coordinate_chunks), 8)  # Cap at 8 for memory
+    
+#     logging.info(f"Using {num_workers} worker processes")
+    
+#     all_results = []
+#     total_valid_points = 0
+#     total_abs_residual = 0.0
+#     total_sq_residual = 0.0
+    
+#     #PARALLEL
+#     with ProcessPoolExecutor(max_workers=num_workers) as executor:
+#         futures = [executor.submit(process_chunk_optimized, args) for args in chunk_args]
+        
+#         completed_chunks = 0
+#         for future in as_completed(futures):
+#             try:
+#                 results, valid_count, abs_sum, sq_sum = future.result()
+                
+#                 all_results.extend(results)
+#                 total_valid_points += valid_count
+#                 total_abs_residual += abs_sum
+#                 total_sq_residual += sq_sum
+                
+#                 completed_chunks += 1
+#                 if completed_chunks % 10 == 0:
+#                     logging.info(f"Completed {completed_chunks}/{len(coordinate_chunks)} chunks")
+                    
+#             except Exception as exc:
+#                 logging.error(f"Chunk processing failed: {exc}")
+#                 continue
+    
+#     #STATISTICS
+#     if total_valid_points > 0:
+#         avg_residual = round(total_abs_residual / total_valid_points, 3)
+#         rms_residual = round((total_sq_residual / total_valid_points) ** 0.5, 3)
+#     else:
+#         avg_residual = 0.0
+#         rms_residual = 0.0
+#         logging.warning("No valid data points found")
+    
+#     statistical_analyses = {
+#         "AVG_RESIDUAL": avg_residual,
+#         "RMS_RESIDUAL": rms_residual,
+#         "VALID_POINTS": total_valid_points,
+#         "PROCESSED_POINTS": total_points
+#     }
+    
+#     end_time = time.time()
+#     processing_time = round(end_time - start_time, 2)
+    
+#     logging.info(f"Hyper-optimized processing completed in {processing_time} seconds")
+#     logging.info(f"Found {total_valid_points} valid points out of {total_points} total")
+#     logging.info(f"Performance: {total_points/processing_time:.0f} points/second")
+    
+#     return all_results, statistical_analyses
+
+
+
+
+
+
+
+
+
+@jit(nopython=True, parallel=True, cache=True)
+def create_residual_grid(gsfc_data, model_data, x_coords, y_coords, x_indices, y_indices):
     """
-    Process a chunk of data using the hyper-optimized computation function.
+    Ultra-fast JIT compiled function to create residual grid directly.
     
     Parameters
     ----------
-    args : tuple
-        (chunk_data, chunk_indices, chunk_id)
+    gsfc_data : numpy.ndarray
+        2D array of GSFC ice mask data
+    model_data : numpy.ndarray 
+        2D array of model ice mask data
+    x_coords : numpy.ndarray
+        1D array of x coordinates
+    y_coords : numpy.ndarray
+        1D array of y coordinates
+    x_indices : numpy.ndarray
+        1D array of x indices for data arrays
+    y_indices : numpy.ndarray
+        1D array of y indices for data arrays
         
     Returns
     -------
     tuple
-        (results_dict_list, valid_count, abs_residual_sum, sq_residual_sum)
+        (residual_grid, valid_count, abs_sum, sq_sum)
     """
-    gsfc_data, model_data, x_coords, y_coords, x_indices, y_indices, chunk_id = args
-       
-    # Use the JIT compiled function
-    x_vals, y_vals, gsfc_vals, model_vals, residuals, valid_mask = compute_residuals_vectorized(
-        gsfc_data, model_data, x_coords, y_coords, x_indices, y_indices
-    )
+    n_x = len(x_coords)
+    n_y = len(y_coords)
     
-    valid_indices = np.where(valid_mask)[0]
+    residual_grid = np.full((n_y, n_x), np.nan, dtype=np.float32)
+    valid_count = 0
+    abs_sum = 0.0
+    sq_sum = 0.0
     
-    # Create result dictionaries only for valid points
-    results = []
-    abs_residual_sum = 0.0
-    sq_residual_sum = 0.0
+    for i in prange(n_x):
+        x_idx = x_indices[i]
+        for j in prange(n_y):
+            y_idx = y_indices[j]
+            
+            gsfc_val = gsfc_data[y_idx, x_idx]
+            model_val = model_data[y_idx, x_idx]
+            
+            if not (np.isnan(gsfc_val) or np.isnan(model_val)):
+                residual = gsfc_val - model_val
+                residual_grid[j, i] = residual
+                valid_count += 1
+                abs_sum += abs(residual)
+                sq_sum += residual * residual
     
-    for idx in valid_indices:
-        residual = float(residuals[idx])
-        result = {
-            'x': round(float(x_vals[idx]), 3),
-            'y': round(float(y_vals[idx]), 3),
-            'gsfc_ice_mask': round(float(gsfc_vals[idx]), 3),
-            'model_ice_mask': round(float(model_vals[idx]), 3),
-            'residual': round(residual, 3)
-        }
-        results.append(result)
-        abs_residual_sum += abs(residual)
-        sq_residual_sum += residual ** 2
-    
-    return results, len(valid_indices), abs_residual_sum, sq_residual_sum
+    return residual_grid, valid_count, abs_sum, sq_sum
 
-def create_optimized_chunks(x_coords, y_coords, chunk_size=2500):
+def find_absolute_calving_per_year_direct_ds(gsfc, model, year):
     """
-    Create optimized chunks that balance memory usage and parallelization.
+    Ultra-fast version that directly creates xarray Dataset without JSON intermediate.
     
-    Parameters
-    ----------
-    x_coords : numpy.ndarray
-        X coordinates
-    y_coords : numpy.ndarray
-        Y coordinates
-    chunk_size : int
-        Target number of points per chunk
-        
-    Returns
-    -------
-    list
-        List of (x_chunk, y_chunk) coordinate pairs
-    """
-    total_points = len(x_coords) * len(y_coords)
-    
-    # Calculate optimal chunk dimensions
-    if total_points <= chunk_size:
-        return [(x_coords, y_coords)]
-    
-    # Try to create roughly square chunks
-    chunk_dim = int(np.sqrt(chunk_size))
-    
-    chunks = []
-    for i in range(0, len(x_coords), chunk_dim):
-        x_chunk = x_coords[i:i + chunk_dim]
-        for j in range(0, len(y_coords), chunk_dim):
-            y_chunk = y_coords[j:j + chunk_dim]
-            chunks.append((x_chunk, y_chunk))
-    
-    return chunks
-
-def find_absolute_calving_per_year_hyper_optimized(gsfc, model, year, num_workers=None, chunk_size=2500):
-    """
-    Hyper-optimized version using JIT compilation, vectorization, and smart chunking.
-    
-    This version uses:
-    - Numba JIT compilation for core computation
-    - Vectorized operations instead of nested loops
-    - Optimized memory layout and data types
-    - Smart chunking for better cache utilization
-    - Reduced Python overhead
+    Uses JIT-compiled numpy operations for maximum speed.
     
     Parameters
     ----------
@@ -769,18 +935,14 @@ def find_absolute_calving_per_year_hyper_optimized(gsfc, model, year, num_worker
         The model calving data object
     year : int
         The year for which to find absolute calving data
-    num_workers : int, optional
-        Number of worker processes. If None, uses optimal number
-    chunk_size : int, optional
-        Target number of points per chunk. Default is 2500
         
     Returns
     -------
     tuple
-        (calving_data_list, statistical_analyses)
+        (xarray.Dataset, statistical_analyses)
     """
     start_time = time.time()
-    logging.info(f"Starting hyper-optimized calving analysis for year {year}")
+    logging.info(f"Starting direct Dataset creation for year {year}")
     
     gsfc_year = gsfc.ds.sel(year=year)
     model_year = model.ds.sel(time=year)
@@ -794,64 +956,17 @@ def find_absolute_calving_per_year_hyper_optimized(gsfc, model, year, num_worker
     )
     
     total_points = len(x_coords) * len(y_coords)
-    logging.info(f"Total grid points: {total_points}")
+    logging.info(f"Processing {total_points} grid points...")
     
-    #Chunking
-    coordinate_chunks = create_optimized_chunks(x_coords, y_coords, chunk_size)
-    logging.info(f"Created {len(coordinate_chunks)} optimized chunks")
+    # Use JIT compiled function for ultra-fast computation
+    residual_grid, valid_count, abs_sum, sq_sum = create_residual_grid(
+        gsfc_data, model_data, x_coords, y_coords, x_indices, y_indices
+    )
     
-    chunk_args = []
-    for i, (x_chunk, y_chunk) in enumerate(coordinate_chunks):
-        x_start = np.searchsorted(x_coords, x_chunk[0])
-        x_end = x_start + len(x_chunk)
-        y_start = np.searchsorted(y_coords, y_chunk[0])
-        y_end = y_start + len(y_chunk)
-        
-        x_idx_chunk = x_indices[x_start:x_end]
-        y_idx_chunk = y_indices[y_start:y_end]
-        
-        chunk_args.append((
-            gsfc_data, model_data, x_chunk, y_chunk, 
-            x_idx_chunk, y_idx_chunk, i
-        ))
-    
-    if num_workers is None:
-        import os
-        num_workers = min(os.cpu_count(), len(coordinate_chunks), 8)  # Cap at 8 for memory
-    
-    logging.info(f"Using {num_workers} worker processes")
-    
-    all_results = []
-    total_valid_points = 0
-    total_abs_residual = 0.0
-    total_sq_residual = 0.0
-    
-    #PARALLEL
-    with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        futures = [executor.submit(process_chunk_optimized, args) for args in chunk_args]
-        
-        completed_chunks = 0
-        for future in as_completed(futures):
-            try:
-                results, valid_count, abs_sum, sq_sum = future.result()
-                
-                all_results.extend(results)
-                total_valid_points += valid_count
-                total_abs_residual += abs_sum
-                total_sq_residual += sq_sum
-                
-                completed_chunks += 1
-                if completed_chunks % 10 == 0:
-                    logging.info(f"Completed {completed_chunks}/{len(coordinate_chunks)} chunks")
-                    
-            except Exception as exc:
-                logging.error(f"Chunk processing failed: {exc}")
-                continue
-    
-    #STATISTICS
-    if total_valid_points > 0:
-        avg_residual = round(total_abs_residual / total_valid_points, 3)
-        rms_residual = round((total_sq_residual / total_valid_points) ** 0.5, 3)
+    # Calculate statistics
+    if valid_count > 0:
+        avg_residual = round(abs_sum / valid_count, 3)
+        rms_residual = round((sq_sum / valid_count) ** 0.5, 3)
     else:
         avg_residual = 0.0
         rms_residual = 0.0
@@ -860,15 +975,36 @@ def find_absolute_calving_per_year_hyper_optimized(gsfc, model, year, num_worker
     statistical_analyses = {
         "AVG_RESIDUAL": avg_residual,
         "RMS_RESIDUAL": rms_residual,
-        "VALID_POINTS": total_valid_points,
+        "VALID_POINTS": int(valid_count),
         "PROCESSED_POINTS": total_points
     }
+    
+    # Create xarray Dataset directly
+    ds = xr.Dataset(
+        {
+            'residual': (('y', 'x'), residual_grid),
+            'gsfc_ice_mask': (('y', 'x'), gsfc_data[y_indices][:, x_indices]),
+            'model_ice_mask': (('y', 'x'), model_data[y_indices][:, x_indices])
+        },
+        coords={
+            'x': x_coords,
+            'y': y_coords,
+            'year': year
+        },
+        attrs={
+            'title': f'Calving comparison residuals for {year}',
+            'avg_residual': avg_residual,
+            'rms_residual': rms_residual,
+            'valid_points': int(valid_count),
+            'processed_points': total_points
+        }
+    )
     
     end_time = time.time()
     processing_time = round(end_time - start_time, 2)
     
-    logging.info(f"Hyper-optimized processing completed in {processing_time} seconds")
-    logging.info(f"Found {total_valid_points} valid points out of {total_points} total")
+    logging.info(f"Direct Dataset creation completed in {processing_time} seconds")
+    logging.info(f"Found {valid_count} valid points out of {total_points} total")
     logging.info(f"Performance: {total_points/processing_time:.0f} points/second")
     
-    return all_results, statistical_analyses  
+    return ds, statistical_analyses
