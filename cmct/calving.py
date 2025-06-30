@@ -162,7 +162,7 @@ class Modelcalving:
         print(f"ice_mask: {self.ice_mask.values}")
         print(f"X coordinates: {self.x.values}")
         print(f"Y coordinates: {self.y.values}")
-        
+    
         
         
         
@@ -903,6 +903,7 @@ def create_residual_grid(gsfc_data, model_data, x_coords, y_coords, x_indices, y
     valid_count = 0
     abs_sum = 0.0
     sq_sum = 0.0
+    face_sum = 0.0
     
     for i in prange(n_x):
         x_idx = x_indices[i]
@@ -916,12 +917,13 @@ def create_residual_grid(gsfc_data, model_data, x_coords, y_coords, x_indices, y
                 residual = gsfc_val - model_val
                 residual_grid[j, i] = residual
                 valid_count += 1
+                face_sum += residual
                 abs_sum += abs(residual)
                 sq_sum += residual * residual
     
-    return residual_grid, valid_count, abs_sum, sq_sum
+    return residual_grid, valid_count, abs_sum, sq_sum, face_sum
 
-def find_absolute_calving_per_year_direct_ds(gsfc, model, year):
+def find_calving_per_year_direct_ds(gsfc, model, year):
     """
     Ultra-fast version that directly creates xarray Dataset without JSON intermediate.
     
@@ -959,7 +961,7 @@ def find_absolute_calving_per_year_direct_ds(gsfc, model, year):
     logging.info(f"Processing {total_points} grid points...")
     
     # Use JIT compiled function for ultra-fast computation
-    residual_grid, valid_count, abs_sum, sq_sum = create_residual_grid(
+    residual_grid, valid_count, abs_sum, sq_sum, sum = create_residual_grid(
         gsfc_data, model_data, x_coords, y_coords, x_indices, y_indices
     )
     
@@ -970,13 +972,15 @@ def find_absolute_calving_per_year_direct_ds(gsfc, model, year):
     else:
         avg_residual = 0.0
         rms_residual = 0.0
+        
         logging.warning("No valid data points found")
     
     statistical_analyses = {
-        "AVG_RESIDUAL": avg_residual,
+        "ABS_AVG_RESIDUAL": avg_residual,
         "RMS_RESIDUAL": rms_residual,
+        "SUM_RESIDUAL": sum,
         "VALID_POINTS": int(valid_count),
-        "PROCESSED_POINTS": total_points
+        "PROCESSED_POINTS": total_points,
     }
     
     # Create xarray Dataset directly
@@ -995,6 +999,8 @@ def find_absolute_calving_per_year_direct_ds(gsfc, model, year):
             'title': f'Calving comparison residuals for {year}',
             'avg_residual': avg_residual,
             'rms_residual': rms_residual,
+            'sum_residual': sum,
+            
             'valid_points': int(valid_count),
             'processed_points': total_points
         }
@@ -1008,3 +1014,108 @@ def find_absolute_calving_per_year_direct_ds(gsfc, model, year):
     logging.info(f"Performance: {total_points/processing_time:.0f} points/second")
     
     return ds, statistical_analyses
+
+# Ultra-optimized point-in-polygon using NumPy batch processing
+@jit(nopython=True)
+def vectorized_point_in_polygon_batch(points_x, points_y, poly_x, poly_y):
+    """
+    Ultra-optimized batch point-in-polygon test.
+    Processes multiple points against one polygon simultaneously using ray casting.
+    """
+    n_points = len(points_x)
+    n_poly = len(poly_x)
+    inside = np.zeros(n_points, dtype=np.bool_)
+    
+    for i in range(n_points):
+        x, y = points_x[i], points_y[i]
+        count = 0
+        
+        j = n_poly - 1
+        for k in range(n_poly):
+            xi, yi = poly_x[k], poly_y[k]
+            xj, yj = poly_x[j], poly_y[j]
+            
+            if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+                count += 1
+            j = k
+        
+        inside[i] = count % 2 == 1
+    
+    return inside
+
+def ultra_optimized_basin_assignment_full(x_coords, y_coords, basin_polygons_arrays, batch_size=50000):
+    """
+    Ultra-optimized basin assignment using batch processing for the entire dataset.
+    Processes points in batches to manage memory and improve cache efficiency.
+    """
+    n_points = len(x_coords)
+    n_basins = len(basin_polygons_arrays)
+    basin_assignments = np.full(n_points, -1, dtype=np.int32)
+    
+    total_start_time = time.time()
+    
+    # Process in batches
+    for batch_start in range(0, n_points, batch_size):
+        batch_end = min(batch_start + batch_size, n_points)
+        batch_x = x_coords[batch_start:batch_end]
+        batch_y = y_coords[batch_start:batch_end]
+        batch_size_actual = len(batch_x)
+        
+        batch_num = batch_start // batch_size + 1
+        total_batches = (n_points - 1) // batch_size + 1
+        
+        batch_start_time = time.time()
+        
+        # Test each basin for this batch
+        for basin_idx in range(n_basins):
+            poly_x, poly_y = basin_polygons_arrays[basin_idx]
+            
+            # Find points not yet assigned
+            unassigned_mask = basin_assignments[batch_start:batch_end] == -1
+            if not np.any(unassigned_mask):
+                continue
+                
+            unassigned_indices = np.where(unassigned_mask)[0]
+            unassigned_x = batch_x[unassigned_indices]
+            unassigned_y = batch_y[unassigned_indices]
+            
+            # Test unassigned points against current basin
+            inside_mask = vectorized_point_in_polygon_batch(unassigned_x, unassigned_y, poly_x, poly_y)
+            
+            # Assign points that are inside this basin
+            global_indices = batch_start + unassigned_indices[inside_mask]
+            basin_assignments[global_indices] = basin_idx
+        
+        batch_time = time.time() - batch_start_time
+        points_per_sec = batch_size_actual / batch_time if batch_time > 0 else 0
+    
+    total_time = time.time() - total_start_time
+    return basin_assignments, total_time
+
+
+def find_basin_calving_per_year_direct_ds(gsfc, model, year, basin_mask):
+    """
+    Find calving data for a specific basin using direct Dataset creation.
+    
+    Parameters
+    ----------
+    gsfc : GSFCcalving
+        The GSFC calving data object
+    model : ModelCalving  
+        The model calving data object
+    year : int
+        The year for which to find absolute calving data
+    basin_mask : numpy.ndarray
+        2D boolean array indicating the basin mask
+        
+    Returns
+    -------
+    tuple
+        (xarray.Dataset, statistical_analyses)
+    """
+    ds, stats = find_calving_per_year_direct_ds(gsfc, model, year)
+    
+    # Apply basin mask to the residuals
+    ds['residual'] = ds['residual'].where(basin_mask)
+    
+    return ds, stats
