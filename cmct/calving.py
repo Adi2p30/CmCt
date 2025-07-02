@@ -9,8 +9,10 @@ import h5py
 import matplotlib.pyplot as plt
 import netCDF4 as nc
 import numpy as np
+from scipy import stats
 import xarray as xr
 import logging
+import gc
 from numba import jit, prange
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from matplotlib import rc
@@ -290,7 +292,11 @@ def prepare_data_arrays(gsfc_year, model_year):
     gsfc_data = gsfc_year.ice_mask.values.astype(np.float32)
     model_data = model_year.ice_mask.values.astype(np.float32)
     
-    return gsfc_data, model_data, model_x, model_y, x_indices, y_indices
+    # Clean up temporary variables
+    del model_x, model_y, gsfc_x, gsfc_y
+    gc.collect()
+    
+    return gsfc_data, model_data, model_year.x.values.astype(np.float32), model_year.y.values.astype(np.float32), x_indices, y_indices
 
 
 @jit(nopython=True, parallel=True, cache=True)
@@ -374,10 +380,13 @@ def find_calving_per_year_direct_ds(gsfc, model, year):
     if gsfc_year is None or model_year is None:
         raise ValueError(f"No data available for the year {year}")
     
-    logging.info("Preparing optimized data arrays...")
     gsfc_data, model_data, x_coords, y_coords, x_indices, y_indices = prepare_data_arrays(
         gsfc_year, model_year
     )
+    
+    # Clean up year data after extracting needed arrays
+    del gsfc_year, model_year
+    gc.collect()
     
     total_points = len(x_coords) * len(y_coords)
     logging.info(f"Processing {total_points} grid points...")
@@ -428,13 +437,15 @@ def find_calving_per_year_direct_ds(gsfc, model, year):
         }
     )
     
+    # Clean up large temporary arrays
+    del gsfc_data, model_data, residual_grid, x_indices, y_indices
+    del abs_sum, sq_sum, sum, valid_count
+    gc.collect()
+    
     end_time = time.time()
     processing_time = round(end_time - start_time, 2)
     
-    logging.info(f"Direct Dataset creation completed in {processing_time} seconds")
-    logging.info(f"Found {valid_count} valid points out of {total_points} total")
-    logging.info(f"Performance: {total_points/processing_time:.0f} points/second")
-    
+    logging.info(f"Found {ds.attrs['valid_points']} valid points out of {total_points} total")    
     return ds, statistical_analyses
 
 # Ultra-optimized point-in-polygon using NumPy batch processing
@@ -465,7 +476,7 @@ def vectorized_point_in_polygon_batch(points_x, points_y, poly_x, poly_y):
     
     return inside
 
-def ultra_optimized_basin_assignment_full(x_coords, y_coords, basin_polygons_arrays, batch_size=50000):
+def basin_assignment(x_coords, y_coords, basin_polygons_arrays, batch_size=50000):
     """
     Ultra-optimized basin assignment using batch processing for the entire dataset.
     Processes points in batches to manage memory and improve cache efficiency.
@@ -507,11 +518,22 @@ def ultra_optimized_basin_assignment_full(x_coords, y_coords, basin_polygons_arr
             # Assign points that are inside this basin
             global_indices = batch_start + unassigned_indices[inside_mask]
             basin_assignments[global_indices] = basin_idx
+            
+            # Clean up temporary arrays
+            del unassigned_indices, unassigned_x, unassigned_y, inside_mask, global_indices
+        
+        # Clean up batch variables
+        del batch_x, batch_y, unassigned_mask
         
         batch_time = time.time() - batch_start_time
         points_per_sec = batch_size_actual / batch_time if batch_time > 0 else 0
+        
+        # Force garbage collection every few batches
+        if batch_num % 10 == 0:
+            gc.collect()
     
     total_time = time.time() - total_start_time
+    gc.collect()  # Final cleanup
     return basin_assignments, total_time
 
 
@@ -604,6 +626,10 @@ class Residual:
         shape_file_gdf = scaling_shape_to_target(shape_file_gdf, rotated_data_shape)
         new_gdf_shape = [float(shape_file_gdf.x.min()), float(shape_file_gdf.x.max()), float(shape_file_gdf.y.min()), float(shape_file_gdf.y.max())]
         
+        # Clean up temporary variables
+        del rotated_data
+        gc.collect()
+        
         return gdf_shape, new_gdf_shape, rotated_data_shape
         
     def aggregating_basins(self, basin_polygons_dict, years=None):
@@ -635,6 +661,9 @@ class Residual:
             x_coords = np.array([coord[0] for coord in coords], dtype=np.float64)
             y_coords = np.array([coord[1] for coord in coords], dtype=np.float64)
             basin_polygons_arrays.append((x_coords, y_coords))
+            
+            # Clean up temporary variables
+            del polygon, coords, x_coords, y_coords
         
         # Initialize the result structure
         basin_aggregated_data = {}
@@ -665,8 +694,12 @@ class Residual:
             x_flat = x_coords_2d.flatten().astype(np.float64)
             y_flat = y_coords_2d.flatten().astype(np.float64)
             
+            # Clean up coordinate grids
+            del x_coords_2d, y_coords_2d, x_coords_1d, y_coords_1d
+            gc.collect()
+            
             # Execute basin assignment
-            basin_assignments, _ = ultra_optimized_basin_assignment_full(
+            basin_assignments, _ = basin_assignment(
                 x_flat, y_flat, basin_polygons_arrays, batch_size=100000
             )
             
@@ -677,9 +710,16 @@ class Residual:
             # Flatten the data
             data_flat = rotated_data.flatten()
             
+            # Clean up rotated_data as we now have flattened version
+            del rotated_data
+            gc.collect()
+            
             # Process only valid data points
             valid_data_mask = ~np.isnan(data_flat)
             valid_indices = np.where(valid_data_mask)[0]
+            
+            # Clean up mask as we have indices
+            del valid_data_mask
             
             # Assign points to basins
             for i in valid_indices:
@@ -697,6 +737,10 @@ class Residual:
                     basin_points['unassigned']['y'].append(y)
                     basin_points['unassigned']['data_value'].append(data_value)
             
+            # Clean up large arrays after processing
+            del x_flat, y_flat, data_flat, basin_assignments, valid_indices
+            gc.collect()
+            
             # Convert lists to numpy arrays for better performance
             for basin_name in basin_points:
                 for key in basin_points[basin_name]:
@@ -706,8 +750,43 @@ class Residual:
             basin_aggregated_data[year] = basin_points
             
             # Print summary for this year
-            total_valid = len(valid_indices)
+            total_valid = sum(len(basin_points[basin]['x']) for basin in basin_points)
             total_assigned = sum(len(basin_points[basin]['x']) for basin in basin_names)
             print(f"  Year {year}: {total_valid:,} valid points, {total_assigned:,} assigned to basins")
+            
+            # Clean up year_data
+            del year_data
+            gc.collect()
+        
+        # Clean up basin polygons arrays
+        del basin_polygons_arrays
+        gc.collect()
         
         return basin_aggregated_data
+
+
+def calculate_basin_statistics(basin_dataset):
+    """Calculate comprehensive statistics for each basin across all years"""
+    basin_stats = {}
+    
+    for year, year_data in basin_dataset.items():
+        if year not in basin_stats:
+            basin_stats[year] = {}
+            
+        for basin_name, basin_data in year_data.items():
+            if len(basin_data['data_value']) > 0:
+                basin_stats[year][basin_name] = {
+                    'count': len(basin_data['data_value']),
+                    'mean': np.mean(basin_data['data_value']),
+                    'std': np.std(basin_data['data_value']),
+                    'min': np.min(basin_data['data_value']),
+                    'max': np.max(basin_data['data_value']),
+                    'rms': np.sqrt(np.mean(np.square(basin_data['data_value']))),
+                    'rss': np.sum(np.square(basin_data['data_value'])),
+                    'sum': np.sum(basin_data['data_value']),
+                    'winsorized_mean': stats.mstats.winsorize(basin_data['data_value'], limits=0.05).mean(),
+                    'outlier_weighted_mean': np.average(basin_data['data_value'], weights=np.abs(basin_data['data_value'] - np.median(basin_data['data_value'])))
+
+                }
+    
+    return basin_stats
