@@ -21,6 +21,7 @@ from multiprocessing import Pool, cpu_count
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from .shapefile_utils import shapefile_to_xy, get_nonzero_indices, scaling_shape_to_target
 import time
+logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')``
 
 # from .time_utils import check_datarange
 rc("mathtext", default="regular")
