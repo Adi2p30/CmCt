@@ -1,3 +1,8 @@
+"""
+LEEGACY CODE 
+Use Panoply for a more modern and feature-rich NetCDF viewer.
+"""
+
 import json
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk

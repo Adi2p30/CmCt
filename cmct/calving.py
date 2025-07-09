@@ -16,18 +16,19 @@ import gc
 from numba import jit, prange
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from matplotlib import rc
-from shapely.geometry import Point
+from cmct.shapefile_utils import * 
+import shapely.geometry
 from multiprocessing import Pool, cpu_count
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from .shapefile_utils import shapefile_to_xy, get_nonzero_indices, scaling_shape_to_target
 import time
-logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')``
+logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # from .time_utils import check_datarange
 rc("mathtext", default="regular")
 
 
-def load_gsfc_calving(filepath):
+def load_gsfc_calving(filepath, basins=None):
     """
     Load GSFC calving data from an nc file.
 
@@ -45,9 +46,8 @@ def load_gsfc_calving(filepath):
     
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"File not found: {filepath}")
-    
     try:    
-        gsfc = GSFCcalving(filepath)
+        gsfc = GSFCcalving(filepath, basins)
         
     except Exception as error:
         print("Error: Failed to load GSFC dataset.")
@@ -78,8 +78,8 @@ def load_model_calving(filepath):
     try:
         model_res = Modelcalving(filepath)
     except Exception as error:
-        print("Error: Failed to load Model dataset.")
-        print(error)
+        logging.error("Error: Failed to load Model dataset.")
+        logging.error(error)
         model_res = None
     return model_res
 
@@ -102,17 +102,20 @@ def load_residuals(residuals):
     try:
         residuals = Residual(residuals)
     except Exception as error:
-        print("Error: Failed to load residuals dataset.")
-        print(error)
+        logging.error("Error: Failed to load residuals dataset.")
+        logging.error(error)
         residuals = None
     return residuals
 
 
 class GSFCcalving:
-    def __init__(self, nc_path):
+    def __init__(self, nc_path, basins = None):
         # Open as xarray Dataset
+        
         self.ds = xr.open_dataset(nc_path, autoclose=True, engine='netcdf4',use_cftime=True)
+        # self.ds = 
         self.ds["ice_mask"] = self.ds["ice_mask"] / 100
+        # self.basins = basins
         # Direct access to variables as attributes
     @property
     def time(self):
@@ -129,6 +132,10 @@ class GSFCcalving:
     @property
     def y(self):
         return self.ds["y"]
+
+    @property
+    def basins(self):
+        return self.basins
 
     # def _set_times_as_datetimes(self, days):
     #     return np.datetime64('2002-01-01T00:00:00') + np.array([int(d*24) for d in days], dtype='timedelta64[h]')
@@ -254,6 +261,34 @@ def match_resolution(obs, res):
     else:
         raise ValueError(f"Unsupported resolution: {res}")
     
+    
+def load_basins_exp(cmct_dir, basins):
+    if basins == "all":
+        selected_basins = [
+            "CW", "NE", "SE", "SW", "NO", "NW", "unassigned"
+        ]
+    else:
+        selected_basins = basins 
+    basin_data = {}
+    basin_polygons = {}
+    if "CW" in selected_basins:
+        basin_data["CW"] = analyze_exp_files(cmct_dir + "/bin/calving/basins/rignot_basins_CW.exp")
+    if "NE" in selected_basins:
+        basin_data["NE"] = analyze_exp_files(cmct_dir + "/bin/calving/basins/rignot_basins_NE.exp")
+    if "SE" in selected_basins:
+        basin_data["SE"] = analyze_exp_files(cmct_dir + "/bin/calving/basins/rignot_basins_SE.exp")
+    if "SW" in selected_basins:
+        basin_data["SW"] = analyze_exp_files(cmct_dir + "/bin/calving/basins/rignot_basins_SW.exp")
+    if "NO" in selected_basins:
+        basin_data["NO"] = analyze_exp_files(cmct_dir + "/bin/calving/basins/rignot_basins_NO.exp")
+    if "NW" in selected_basins:
+        basin_data["NW"] = analyze_exp_files(cmct_dir + "/bin/calving/basins/rignot_basins_NW.exp")
+
+    for basin_name, basin_data in basin_data.items():
+        basin_polygons[basin_name] = shapely.geometry.Polygon(zip(basin_data['x'], basin_data['y']))
+
+    return basin_polygons, selected_basins
+
 #--------------------
 # PARALLEL PROCESSING CALVING
 #--------------------
@@ -279,6 +314,9 @@ def prepare_data_arrays(gsfc_year, model_year):
     tuple
         Prepared arrays and coordinate information
     """
+    
+    
+    
     model_x = model_year.x.values.astype(np.float32)
     model_y = model_year.y.values.astype(np.float32)
     gsfc_x = gsfc_year.x.values.astype(np.float32)
@@ -352,7 +390,7 @@ def create_residual_grid(gsfc_data, model_data, x_coords, y_coords, x_indices, y
     
     return residual_grid, valid_count, abs_sum, sq_sum, face_sum
 
-def find_calving_per_year_direct_ds(gsfc, model, year):
+def find_calving_per_year_direct_ds(gsfc, model, year, basin='all'):
     """
     Ultra-fast version that directly creates xarray Dataset without JSON intermediate.
     
@@ -390,7 +428,7 @@ def find_calving_per_year_direct_ds(gsfc, model, year):
     gc.collect()
     
     total_points = len(x_coords) * len(y_coords)
-    logging.info(f"Processing {total_points} grid points...")
+    # logging.info(f"Processing {total_points} grid points...")
     
     # Use JIT compiled function for ultra-fast computation
     residual_grid, valid_count, abs_sum, sq_sum, sum = create_residual_grid(
@@ -446,7 +484,7 @@ def find_calving_per_year_direct_ds(gsfc, model, year):
     end_time = time.time()
     processing_time = round(end_time - start_time, 2)
     
-    logging.info(f"Found {ds.attrs['valid_points']} valid points out of {total_points} total")    
+    # logging.info(f"Found {ds.attrs['valid_points']} valid points out of {total_points} total")    
     return ds, statistical_analyses
 
 # Ultra-optimized point-in-polygon using NumPy batch processing
@@ -582,188 +620,190 @@ class Residual:
         self.ds = residuals
         self.basins = None
         
-    def rotated_data_year(self, year):
-        """
-        Get the residual data for a specific year.
+def rotated_data_year(gsfc, year):
+    """
+    Get the residual data for a specific year.
 
-        Parameters
-        ----------
-        year : int
-            The year for which to retrieve the residual data.
+    Parameters
+    ----------
+    year : int
+        The year for which to retrieve the residual data.
 
-        Returns
-        -------
-        xarray.DataArray
-            The residual data for the specified year.
-        """
-        if "year" not in self.ds.dims:
-            raise ValueError("The dataset does not contain a 'year' dimension.")
+    Returns
+    -------
+    xarray.DataArray
+        The residual data for the specified year.
+    """
+    if "year" not in gsfc.ds.dims:
+        raise ValueError("The dataset does not contain a 'year' dimension.")
+    
+    data = gsfc.ds.sel(year=year).residual
+    return np.rot90(data, k=0)
+
+def fit_basins_per_year(gsfc, basin_aggregation = False, shape_file = None, year = 2006):
+    """
+    Fit residuals by basins using the provided basin mask.
+
+    Parameters
+    ----------
+    basin_mask : numpy.ndarray
+        2D boolean array indicating the basin mask.
+
+    Returns
+    -------
+    dict
+        Dictionary with basin names as keys and aggregated statistics as values.
+    """
+    if not basin_aggregation:
+        exit("Basin aggregation is not enabled. Please set basin_aggregation to True to proceed with basin-wise plotting.")
+    
+    shape_file_gdf = shapefile_to_xy(shape_file)
+    gdf_shape = [float(shape_file_gdf.x.min()), float(shape_file_gdf.x.max()), float(shape_file_gdf.y.min()), float(shape_file_gdf.y.max())]
+
+    rotated_data = rotated_data_year(gsfc, year)
+    rotated_data_shape = get_nonzero_indices(rotated_data)
+    shape_file_gdf = scaling_shape_to_target(shape_file_gdf, rotated_data_shape)
+    new_gdf_shape = [float(shape_file_gdf.x.min()), float(shape_file_gdf.x.max()), float(shape_file_gdf.y.min()), float(shape_file_gdf.y.max())]
+    
+    # Clean up temporary variables
+    del rotated_data
+    gc.collect()
+    
+    return gdf_shape, new_gdf_shape, rotated_data_shape
+    
+def aggregating_basins(gsfc, basin_polygons_dict, years=None):
+    """
+    Aggregate residuals by basins for multiple years, creating a structured dataset.
+    
+    Parameters
+    ----------
+    basin_polygons_dict : dict
+        Dictionary with basin names as keys and shapely.geometry.Polygon objects as values
+    years : list, optional
+        List of years to process. If None, processes all years in the dataset
         
-        data = self.ds.sel(year=year).residual
-        return np.rot90(data, k=0)
+    Returns
+    -------
+    dict
+        Nested dictionary structure: {year: {basin: {'x': [], 'y': [], 'data_value': []}}}
+    """
+    if years is None:
+        years = gsfc.ds.year.values
 
-    def fit_basins_per_year(self, basin_aggregation = False, shape_file = None, year = 2006):
-        """
-        Fit residuals by basins using the provided basin mask.
-
-        Parameters
-        ----------
-        basin_mask : numpy.ndarray
-            2D boolean array indicating the basin mask.
-
-        Returns
-        -------
-        dict
-            Dictionary with basin names as keys and aggregated statistics as values.
-        """
-        if not basin_aggregation:
-            exit("Basin aggregation is not enabled. Please set basin_aggregation to True to proceed with basin-wise plotting.")
-        
-        shape_file_gdf = shapefile_to_xy(shape_file)
-        gdf_shape = [float(shape_file_gdf.x.min()), float(shape_file_gdf.x.max()), float(shape_file_gdf.y.min()), float(shape_file_gdf.y.max())]
-
-        rotated_data = self.rotated_data_year(year)
-        rotated_data_shape = get_nonzero_indices(rotated_data)
-        shape_file_gdf = scaling_shape_to_target(shape_file_gdf, rotated_data_shape)
-        new_gdf_shape = [float(shape_file_gdf.x.min()), float(shape_file_gdf.x.max()), float(shape_file_gdf.y.min()), float(shape_file_gdf.y.max())]
+    # Convert basin polygons to numpy arrays for optimized processing
+    basin_names = list(basin_polygons_dict.keys())
+    basin_polygons_arrays = []
+    
+    for basin_name in basin_names:
+        polygon = basin_polygons_dict[basin_name]
+        coords = list(polygon.exterior.coords)
+        x_coords = np.array([coord[0] for coord in coords], dtype=np.float64)
+        y_coords = np.array([coord[1] for coord in coords], dtype=np.float64)
+        basin_polygons_arrays.append((x_coords, y_coords))
         
         # Clean up temporary variables
+        del polygon, coords, x_coords, y_coords
+    
+    # Initialize the result structure
+    basin_aggregated_data = {}
+    
+    # Process each year
+    for year in years:
+        logging.info(f"Processing year {year}...")
+        
+        # Get data for this year
+        year_data = gsfc.ds.sel(year=year)
+        rotated_data = rotated_data_year(gsfc, year)
+
+        # Get coordinate information
+        if hasattr(year_data, 'x') and hasattr(year_data, 'y'):
+            x_coords_1d = year_data.x.values
+            y_coords_1d = year_data.y.values
+            
+        else:
+            # Fallback: generate coordinates from data shape
+            height, width = rotated_data.shape
+            # You may need to adjust these bounds based on your data
+            x_min, x_max = -1000000, 1000000  # Adjust as needed
+            y_min, y_max = -4000000, 0        # Adjust as needed
+            x_coords_1d = np.linspace(x_min, x_max, width)
+            y_coords_1d = np.linspace(y_min, y_max, height)
+        
+        # Create coordinate meshgrid
+        x_coords_2d, y_coords_2d = np.meshgrid(x_coords_1d, y_coords_1d, indexing='xy')
+        x_flat = x_coords_2d.flatten().astype(np.float64)
+        y_flat = y_coords_2d.flatten().astype(np.float64)
+        
+        # Clean up coordinate grids
+        del x_coords_2d, y_coords_2d, x_coords_1d, y_coords_1d
+        gc.collect()
+        
+        # Execute basin assignment
+        basin_assignments, _ = basin_assignment(
+            x_flat, y_flat, basin_polygons_arrays, batch_size=100000
+        )
+        
+        # Initialize basin points for this year
+        basin_points = {basin_name: {'x': [], 'y': [], 'data_value': []} for basin_name in basin_names}
+        basin_points['unassigned'] = {'x': [], 'y': [], 'data_value': []}
+        
+        # Flatten the data
+        data_flat = rotated_data.flatten()
+        
+        # Clean up rotated_data as we now have flattened version
         del rotated_data
         gc.collect()
         
-        return gdf_shape, new_gdf_shape, rotated_data_shape
+        # Process only valid data points
+        valid_data_mask = ~np.isnan(data_flat)
+        valid_indices = np.where(valid_data_mask)[0]
         
-    def aggregating_basins(self, basin_polygons_dict, years=None):
-        """
-        Aggregate residuals by basins for multiple years, creating a structured dataset.
+        # Clean up mask as we have indices
+        del valid_data_mask
         
-        Parameters
-        ----------
-        basin_polygons_dict : dict
-            Dictionary with basin names as keys and shapely.geometry.Polygon objects as values
-        years : list, optional
-            List of years to process. If None, processes all years in the dataset
+        # Assign points to basins
+        for i in valid_indices:
+            basin_idx = basin_assignments[i]
+            x, y = x_flat[i], y_flat[i]
+            data_value = data_flat[i]
             
-        Returns
-        -------
-        dict
-            Nested dictionary structure: {year: {basin: {'x': [], 'y': [], 'data_value': []}}}
-        """
-        if years is None:
-            years = self.ds.year.values
-            
-        # Convert basin polygons to numpy arrays for optimized processing
-        basin_names = list(basin_polygons_dict.keys())
-        basin_polygons_arrays = []
-        
-        for basin_name in basin_names:
-            polygon = basin_polygons_dict[basin_name]
-            coords = list(polygon.exterior.coords)
-            x_coords = np.array([coord[0] for coord in coords], dtype=np.float64)
-            y_coords = np.array([coord[1] for coord in coords], dtype=np.float64)
-            basin_polygons_arrays.append((x_coords, y_coords))
-            
-            # Clean up temporary variables
-            del polygon, coords, x_coords, y_coords
-        
-        # Initialize the result structure
-        basin_aggregated_data = {}
-        
-        # Process each year
-        for year in years:
-            print(f"Processing year {year}...")
-            
-            # Get data for this year
-            year_data = self.ds.sel(year=year)
-            rotated_data = self.rotated_data_year(year)
-            
-            # Get coordinate information
-            if hasattr(year_data, 'x') and hasattr(year_data, 'y'):
-                x_coords_1d = year_data.x.values
-                y_coords_1d = year_data.y.values
+            if basin_idx >= 0:
+                basin_name = basin_names[basin_idx]
+                basin_points[basin_name]['x'].append(x)
+                basin_points[basin_name]['y'].append(y)
+                basin_points[basin_name]['data_value'].append(data_value)
             else:
-                # Fallback: generate coordinates from data shape
-                height, width = rotated_data.shape
-                # You may need to adjust these bounds based on your data
-                x_min, x_max = -1000000, 1000000  # Adjust as needed
-                y_min, y_max = -4000000, 0        # Adjust as needed
-                x_coords_1d = np.linspace(x_min, x_max, width)
-                y_coords_1d = np.linspace(y_min, y_max, height)
-            
-            # Create coordinate meshgrid
-            x_coords_2d, y_coords_2d = np.meshgrid(x_coords_1d, y_coords_1d, indexing='xy')
-            x_flat = x_coords_2d.flatten().astype(np.float64)
-            y_flat = y_coords_2d.flatten().astype(np.float64)
-            
-            # Clean up coordinate grids
-            del x_coords_2d, y_coords_2d, x_coords_1d, y_coords_1d
-            gc.collect()
-            
-            # Execute basin assignment
-            basin_assignments, _ = basin_assignment(
-                x_flat, y_flat, basin_polygons_arrays, batch_size=100000
-            )
-            
-            # Initialize basin points for this year
-            basin_points = {basin_name: {'x': [], 'y': [], 'data_value': []} for basin_name in basin_names}
-            basin_points['unassigned'] = {'x': [], 'y': [], 'data_value': []}
-            
-            # Flatten the data
-            data_flat = rotated_data.flatten()
-            
-            # Clean up rotated_data as we now have flattened version
-            del rotated_data
-            gc.collect()
-            
-            # Process only valid data points
-            valid_data_mask = ~np.isnan(data_flat)
-            valid_indices = np.where(valid_data_mask)[0]
-            
-            # Clean up mask as we have indices
-            del valid_data_mask
-            
-            # Assign points to basins
-            for i in valid_indices:
-                basin_idx = basin_assignments[i]
-                x, y = x_flat[i], y_flat[i]
-                data_value = data_flat[i]
-                
-                if basin_idx >= 0:
-                    basin_name = basin_names[basin_idx]
-                    basin_points[basin_name]['x'].append(x)
-                    basin_points[basin_name]['y'].append(y)
-                    basin_points[basin_name]['data_value'].append(data_value)
-                else:
-                    basin_points['unassigned']['x'].append(x)
-                    basin_points['unassigned']['y'].append(y)
-                    basin_points['unassigned']['data_value'].append(data_value)
-            
-            # Clean up large arrays after processing
-            del x_flat, y_flat, data_flat, basin_assignments, valid_indices
-            gc.collect()
-            
-            # Convert lists to numpy arrays for better performance
-            for basin_name in basin_points:
-                for key in basin_points[basin_name]:
-                    basin_points[basin_name][key] = np.array(basin_points[basin_name][key])
-            
-            # Store the result for this year
-            basin_aggregated_data[year] = basin_points
-            
-            # Print summary for this year
-            total_valid = sum(len(basin_points[basin]['x']) for basin in basin_points)
-            total_assigned = sum(len(basin_points[basin]['x']) for basin in basin_names)
-            print(f"  Year {year}: {total_valid:,} valid points, {total_assigned:,} assigned to basins")
-            
-            # Clean up year_data
-            del year_data
-            gc.collect()
+                basin_points['unassigned']['x'].append(x)
+                basin_points['unassigned']['y'].append(y)
+                basin_points['unassigned']['data_value'].append(data_value)
         
-        # Clean up basin polygons arrays
-        del basin_polygons_arrays
+        # Clean up large arrays after processing
+        del x_flat, y_flat, data_flat, basin_assignments, valid_indices
         gc.collect()
         
-        return basin_aggregated_data
+        # Convert lists to numpy arrays for better performance
+        for basin_name in basin_points:
+            for key in basin_points[basin_name]:
+                basin_points[basin_name][key] = np.array(basin_points[basin_name][key])
+        
+        # Store the result for this year
+        basin_aggregated_data[year] = basin_points
+        
+        # Print summary for this year
+        total_valid = sum(len(basin_points[basin]['x']) for basin in basin_points)
+        total_assigned = sum(len(basin_points[basin]['x']) for basin in basin_names)
+        logging.info(f"Year {year}: {total_valid:,} valid points, {total_assigned:,} assigned to basins")
+        
+        
+        # Clean up year_data
+        del year_data
+        gc.collect()
+    
+    # Clean up basin polygons arrays
+    del basin_polygons_arrays
+    gc.collect()
+    
+    return basin_aggregated_data
 
 
 def calculate_basin_statistics(basin_dataset):
@@ -791,3 +831,142 @@ def calculate_basin_statistics(basin_dataset):
                 }
     
     return basin_stats
+
+def format_basin_statistics(basin_names, stats):
+    print("Basin Statistics Summary:")
+    print("=" * 80)
+
+    for year in sorted(stats.keys()):
+        print(f"\nYear {year}:")
+        print(f"{'Basin':<12} {'Count':<8} {'Sum':<10} {'Mean':<10} {'Std':<10} {'Min':<10} {'Max':<10} {'RMS':<10} {'RSS':<10} {'Winsorized Mean':<10} {'Outlier Weighted Mean':<10}")
+        print("-" * 80)
+        
+        for basin_name in ['CW', 'NE', 'SE', 'SW', 'NO', 'NW']:
+            if basin_name in stats[year]:
+                s = stats[year][basin_name]
+                print(f"{basin_name:<12} {s['count']:<8} {s['sum']:<10.4f} {s['mean']:<10.4f} {s['std']:<10.4f} "
+                    f"{s['min']:<10.4f} {s['max']:<10.4f} {s['rms']:<10.4f} {s['rss']:<10.4f} {s['winsorized_mean']:<10.4f} {s['outlier_weighted_mean']:<10.4f}")
+
+        if 'unassigned' in stats[year]:
+            s = stats[year]['unassigned']
+            print(f"{'unassigned':<12} {s['count']:<8} {s['sum']:<10.4f} {s['mean']:<10.4f} {s['std']:<10.4f} "
+                f"{s['min']:<10.4f} {s['max']:<10.4f} {s['rms']:<10.4f} {s['rss']:<10.4f} {s['winsorized_mean']:<10.4f} {s['outlier_weighted_mean']:<10.4f}")
+
+
+def make_time_residuals_plot(stats, colors, basin_names):
+    """
+    Create a time series plot for each basin showing sum values over the years.
+    """
+
+    years = sorted(stats.keys())
+
+    # Create a figure with subplots for each basin
+    fig, axes = plt.subplots(2, 4, figsize=(16, 10))
+    fig.suptitle('Basin Sum Values Over Time (Individual Scales)', fontsize=16)
+
+    # Flatten axes array for easier indexing
+    axes = axes.flatten()
+
+    for i, basin_name in enumerate(basin_names):
+        ax = axes[i]
+        
+        # Extract sum values for this basin across all years
+        basin_sums = []
+        valid_years = []
+        
+        for year in years:
+            if basin_name in stats[year]:
+                basin_sums.append(stats[year][basin_name]['sum'])
+                valid_years.append(year)
+        
+        # Plot the data
+        if basin_sums:  # Only plot if there's data
+            ax.plot(valid_years, basin_sums, marker='o', linewidth=2, 
+                    color=colors[basin_name], markersize=6, label=basin_name)
+            ax.fill_between(valid_years, basin_sums, alpha=0.3, color=colors[basin_name])
+            
+            # Set individual y-axis limits to highlight the delta for this basin
+            y_min_basin = min(basin_sums)
+            y_max_basin = max(basin_sums)
+            y_range_basin = y_max_basin - y_min_basin
+            
+            # Add padding to make the changes more visible
+            if y_range_basin > 0:
+                padding = y_range_basin * 0.1  # 10% padding
+                ax.set_ylim(y_min_basin - padding, y_max_basin + padding)
+            else:
+                # If no variation, still show some range around the value
+                padding = abs(y_min_basin) * 0.01 if y_min_basin != 0 else 1
+                ax.set_ylim(y_min_basin - padding, y_max_basin + padding)
+            
+            # Customize the subplot
+            ax.set_title(f'{basin_name} Basin Sum Over Time', fontsize=12, fontweight='bold')
+            ax.set_xlabel('Year')
+            ax.set_ylabel('Sum Value')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+            
+            # Add value labels on points
+            for x, y in zip(valid_years, basin_sums):
+                ax.annotate(f'{y:.1f}', (x, y), textcoords="offset points", 
+                        xytext=(0,10), ha='center', fontsize=8)
+            
+            # Add range information to the title
+            delta = y_max_basin - y_min_basin
+            ax.set_title(f'{basin_name} Basin (Δ={delta:.1f})', fontsize=12, fontweight='bold')
+            
+        else:
+            ax.text(0.5, 0.5, f'No data for {basin_name}', 
+                    ha='center', va='center', transform=ax.transAxes, fontsize=12)
+            ax.set_title(f'{basin_name} Basin Sum Over Time', fontsize=12, fontweight='bold')
+
+    # Remove the empty subplot (we have 7 basins, 8 subplots)
+    if len(basin_names) < len(axes):
+        axes[-1].remove()
+
+    plt.tight_layout()
+    plt.show()
+
+    # Also create a combined plot showing all basins on one graph
+    plt.figure(figsize=(12, 8))
+
+    for basin_name in basin_names:
+        basin_sums = []
+        valid_years = []
+        
+        for year in years:
+            if basin_name in stats[year]:
+                basin_sums.append(stats[year][basin_name]['sum'])
+                valid_years.append(year)
+        
+        if basin_sums:  # Only plot if there's data
+            plt.plot(valid_years, basin_sums, marker='o', linewidth=2, 
+                    color=colors[basin_name], markersize=6, label=basin_name)
+
+    plt.title('All Basin Sum Values Over Time', fontsize=16, fontweight='bold')
+    plt.xlabel('Year', fontsize=12)
+    plt.ylabel('Sum Value', fontsize=12)
+    plt.legend(title='Basin', fontsize=10)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+    # Print summary statistics with delta information
+    print("\nSummary Statistics for Basin Sums:")
+    print("=" * 80)
+    for basin_name in basin_names:
+        basin_sums = []
+        for year in years:
+            if basin_name in stats[year]:
+                basin_sums.append(stats[year][basin_name]['sum'])
+        
+        if basin_sums:
+            delta = max(basin_sums) - min(basin_sums)
+            print(f"{basin_name:>12}: Min={min(basin_sums):8.4f}, Max={max(basin_sums):8.4f}, "
+                f"Mean={np.mean(basin_sums):8.4f}, Std={np.std(basin_sums):8.4f}, Delta={delta:8.4f}")
+        else:
+            print(f"{basin_name:>12}: No data available")
+
+    # Clean up
+    del basin_sums, valid_years
+    gc.collect()
