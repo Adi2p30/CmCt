@@ -236,7 +236,6 @@ def check_data_daterange(gsfc_time: list, model_time: list, start_date: int, end
         print(f"The selected dates {start_date} and {end_date} are within the range of the model data. These are accepted.")
 
 
-# Currentlty not implemented, not required.
 def match_resolution(obs, res):
     #TODO: Future Implementation
     """
