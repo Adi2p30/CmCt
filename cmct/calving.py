@@ -1,15 +1,13 @@
 import datetime
 import os
 from datetime import timedelta
-import cartopy
-import cartopy.crs as ccrs
-import cartopy.io.shapereader as shpreader
 import geopandas as gpd
 import h5py
 import matplotlib.pyplot as plt
 import netCDF4 as nc
 import numpy as np
 from scipy import stats
+import cftime
 import xarray as xr
 import logging
 import gc
@@ -26,6 +24,42 @@ logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %
 
 # from .time_utils import check_datarange
 rc("mathtext", default="regular")
+
+def safe_float_conversion(data, default_value=np.nan):
+    """
+    Safely convert data to float64, handling non-numeric values.
+    
+    Parameters
+    ----------
+    data : array-like
+        Data to convert
+    default_value : float, optional
+        Value to use for non-numeric entries (default: np.nan)
+        
+    Returns
+    -------
+    numpy.ndarray
+        Array converted to float64 with non-numeric values replaced
+    """
+    try:
+        return data.astype(np.float64)
+    except (ValueError, TypeError):
+        result = np.full(data.shape, default_value, dtype=np.float64)
+        # Try to convert element by element for mixed types
+        flat_data = data.flatten()
+        flat_result = result.flatten()
+        
+        for i in range(len(flat_data)):
+            try:
+                val = float(flat_data[i])
+                if np.isfinite(val):
+                    flat_result[i] = val
+                else:
+                    flat_result[i] = default_value
+            except (ValueError, TypeError, OverflowError):
+                flat_result[i] = default_value
+        
+        return flat_result.reshape(data.shape)
 
 
 def load_gsfc_calving(filepath, basins=None):
@@ -115,6 +149,9 @@ class GSFCcalving:
         self.ds = xr.open_dataset(nc_path, autoclose=True, engine='netcdf4',use_cftime=True)
         # self.ds = 
         self.ds["ice_mask"] = self.ds["ice_mask"] / 100
+        # Safely convert ice_mask to float64 for np.isnan compatibility
+        ice_mask_data = safe_float_conversion(self.ds["ice_mask"].values)
+        self.ds["ice_mask"] = (self.ds["ice_mask"].dims, ice_mask_data)
         # self.basins = basins
         # Direct access to variables as attributes
     @property
@@ -146,6 +183,9 @@ class Modelcalving:
         # Open as xarray Dataset
         self.ds = xr.open_dataset(nc_path, autoclose=True, engine='netcdf4',use_cftime=True)
         self.ds["ice_mask"] = self.ds["sftgif"]
+        # Safely convert ice_mask to float64 for np.isnan compatibility
+        ice_mask_data = safe_float_conversion(self.ds["ice_mask"].values)
+        self.ds["ice_mask"] = (self.ds["ice_mask"].dims, ice_mask_data)
         
         # Making the variables consistent REMOVE IF NECESSARY
         self.ds = self.ds.drop("sftgif")
@@ -199,6 +239,9 @@ class Modelcalving:
         print(f"X coordinates: {self.x.values}")
         print(f"Y coordinates: {self.y.values}")
         
+#--------------------
+# NOTE: ERROR CHECKING
+#--------------------
 
 def convert_to_standard_datetime(time_var):
     """
@@ -217,23 +260,97 @@ def convert_to_standard_datetime(time_var):
 
 
 def check_data_daterange(gsfc_time: list, model_time: list, start_date: int, end_date: int):
-    print(type(gsfc_time), type(model_time), type(start_date), type(end_date))
+    """
+    Check if the requested date range is available in both datasets.
+    Handles different time formats flexibly (cftime, datetime, float years, etc.)
     
-    gsfc_time.sort()
-    gsfc_time_min = gsfc_time[0]
-    gsfc_time_max = gsfc_time[-1]
+    Parameters
+    ----------
+    gsfc_time : list or array
+        Time values from GSFC dataset
+    model_time : list or array
+        Time values from model dataset  
+    start_date : int
+        Start year for comparison
+    end_date : int
+        End year for comparison
+    """
+    import cftime
+    import numpy as np
+    from datetime import datetime
     
-    model_time.sort()
-    model_time_min = model_time[0]
-    model_time_max = model_time[-1]
+    try:
+        import pandas as pd
+        HAS_PANDAS = True
+    except ImportError:
+        HAS_PANDAS = False
+    
+    def extract_year(time_val):
+        """Extract year from various time formats"""
+        if isinstance(time_val, (int, float)):
+            # Assume it's already a year (possibly decimal year)
+            return float(time_val)
+        elif hasattr(time_val, 'year'):
+            # cftime, datetime, or similar objects with year attribute
+            return float(time_val.year)
+        elif isinstance(time_val, np.datetime64):
+            # numpy datetime64
+            if HAS_PANDAS:
+                return float(pd.to_datetime(time_val).year)
+            else:
+                # Fallback without pandas
+                return float(str(time_val)[:4])
+        elif isinstance(time_val, str):
+            # Try to parse string dates
+            if HAS_PANDAS:
+                try:
+                    dt = pd.to_datetime(time_val)
+                    return float(dt.year)
+                except:
+                    pass
+            # If pandas parsing fails or not available, try to extract year from string
+            import re
+            year_match = re.search(r'\d{4}', str(time_val))
+            if year_match:
+                return float(year_match.group())
+        
+        # Fallback: try to convert to float directly
+        try:
+            return float(time_val)
+        except:
+            raise ValueError(f"Cannot extract year from time value: {time_val} (type: {type(time_val)})")
+    
+    # Convert time arrays to years
+    try:
+        gsfc_years = [extract_year(t) for t in gsfc_time]
+        model_years = [extract_year(t) for t in model_time]
+    except Exception as e:
+        print(f"Error processing time values: {e}")
+        print(f"GSFC time sample: {gsfc_time[:3] if len(gsfc_time) > 3 else gsfc_time}")
+        print(f"Model time sample: {model_time[:3] if len(model_time) > 3 else model_time}")
+        raise
+    
+    # Sort and get min/max years
+    gsfc_years.sort()
+    gsfc_time_min = gsfc_years[0]
+    gsfc_time_max = gsfc_years[-1]
+    
+    model_years.sort()
+    model_time_min = model_years[0]
+    model_time_max = model_years[-1]
 
     minimum_time = max(gsfc_time_min, model_time_min)
     maximum_time = min(gsfc_time_max, model_time_max)
+    
+    print(f"GSFC data range: {gsfc_time_min:.1f} to {gsfc_time_max:.1f}")
+    print(f"Model data range: {model_time_min:.1f} to {model_time_max:.1f}")
+    print(f"Overlapping range: {minimum_time:.1f} to {maximum_time:.1f}")
+    print(f"Requested range: {start_date} to {end_date}")
 
-    if not (minimum_time <= start_date <= end_date and start_date <= end_date <= maximum_time):
-        raise ValueError(f"Date range {start_date} to {end_date} is outside the available data range: {minimum_time} to {maximum_time}.")
+    if not (minimum_time <= start_date <= end_date <= maximum_time):
+        raise ValueError(f"Date range {start_date} to {end_date} is outside the available overlapping data range: {minimum_time:.1f} to {maximum_time:.1f}.")
     else: 
-        print(f"The selected dates {start_date} and {end_date} are within the range of the model data. These are accepted.")
+        print(f"✓ The selected dates {start_date} to {end_date} are within the overlapping data range.")
 
 
 def match_resolution(obs, res):
@@ -261,36 +378,31 @@ def match_resolution(obs, res):
         raise ValueError(f"Unsupported resolution: {res}")
     
     
-def load_basins_exp(cmct_dir, basins):
+def load_basins(cmct_dir, basins):
+    basin_data = load_basin_polygons(cmct_dir + "/bin/Calving/GRE_Basins_IMBIE2_v1.3/GRE_Basins_IMBIE2_v1.3.shp")
     if basins == "all":
         selected_basins = [
             "CW", "NE", "SE", "SW", "NO", "NW", "unassigned"
         ]
     else:
         selected_basins = basins 
-    basin_data = {}
+   
+    # Filter basin_data to only include selected basins
     basin_polygons = {}
-    if "CW" in selected_basins:
-        basin_data["CW"] = analyze_exp_files(cmct_dir + "/bin/calving/basins/rignot_basins_CW.exp")
-    if "NE" in selected_basins:
-        basin_data["NE"] = analyze_exp_files(cmct_dir + "/bin/calving/basins/rignot_basins_NE.exp")
-    if "SE" in selected_basins:
-        basin_data["SE"] = analyze_exp_files(cmct_dir + "/bin/calving/basins/rignot_basins_SE.exp")
-    if "SW" in selected_basins:
-        basin_data["SW"] = analyze_exp_files(cmct_dir + "/bin/calving/basins/rignot_basins_SW.exp")
-    if "NO" in selected_basins:
-        basin_data["NO"] = analyze_exp_files(cmct_dir + "/bin/calving/basins/rignot_basins_NO.exp")
-    if "NW" in selected_basins:
-        basin_data["NW"] = analyze_exp_files(cmct_dir + "/bin/calving/basins/rignot_basins_NW.exp")
-
-    for basin_name, basin_data in basin_data.items():
-        basin_polygons[basin_name] = shapely.geometry.Polygon(zip(basin_data['x'], basin_data['y']))
+    
+    for basin_name in selected_basins:
+        if basin_name in basin_data:
+            basin_polygons[basin_name] = basin_data[basin_name]
 
     return basin_polygons, selected_basins
 
+
+
 #--------------------
-# PARALLEL PROCESSING CALVING
+# NOTE: RESIDUAL CALCULATION
 #--------------------
+
+
 
 """
 SIMPLE (LEGACY) -> HYPER OPTIMIZED JSON (LEGACY) -> NO JSON JIT OPTIMIZED (CURRENT)
@@ -327,11 +439,41 @@ def prepare_data_arrays(gsfc_year, model_year):
     y_indices = np.searchsorted(gsfc_y, model_y)
     y_indices = np.clip(y_indices, 0, len(gsfc_y) - 1)
     
-    gsfc_data = gsfc_year.ice_mask.values.astype(np.float32)
-    model_data = model_year.ice_mask.values.astype(np.float32)
+    # Safe conversion of ice_mask data to float32 with NaN handling
+    gsfc_ice_mask = gsfc_year.ice_mask.values
+    model_ice_mask = model_year.ice_mask.values
+    
+    # Convert to float32 safely, handling any non-numeric values
+    try:
+        gsfc_data = gsfc_ice_mask.astype(np.float32)
+    except (ValueError, TypeError):
+        # If conversion fails, create float32 array and copy valid values
+        gsfc_data = np.full(gsfc_ice_mask.shape, np.nan, dtype=np.float32)
+        try:
+            # Try to convert to float64 first, then check for finite values
+            temp_data = gsfc_ice_mask.astype(np.float64)
+            numeric_mask = np.isfinite(temp_data)
+            gsfc_data[numeric_mask] = temp_data[numeric_mask].astype(np.float32)
+        except (ValueError, TypeError):
+            # If all else fails, leave as NaN
+            pass
+    
+    try:
+        model_data = model_ice_mask.astype(np.float32)
+    except (ValueError, TypeError):
+        # If conversion fails, create float32 array and copy valid values
+        model_data = np.full(model_ice_mask.shape, np.nan, dtype=np.float32)
+        try:
+            # Try to convert to float64 first, then check for finite values
+            temp_data = model_ice_mask.astype(np.float64)
+            numeric_mask = np.isfinite(temp_data)
+            model_data[numeric_mask] = temp_data[numeric_mask].astype(np.float32)
+        except (ValueError, TypeError):
+            # If all else fails, leave as NaN
+            pass
     
     # Clean up temporary variables
-    del model_x, model_y, gsfc_x, gsfc_y
+    del model_x, model_y, gsfc_x, gsfc_y, gsfc_ice_mask, model_ice_mask
     gc.collect()
     
     return gsfc_data, model_data, model_year.x.values.astype(np.float32), model_year.y.values.astype(np.float32), x_indices, y_indices
@@ -389,6 +531,46 @@ def create_residual_grid(gsfc_data, model_data, x_coords, y_coords, x_indices, y
     
     return residual_grid, valid_count, abs_sum, sq_sum, face_sum
 
+@jit(nopython=True, parallel=True, cache=True)
+def create_aligned_masks(gsfc_data, model_data, x_coords, y_coords, x_indices, y_indices):
+    """
+    JIT-compiled function to create aligned ice mask arrays.
+    
+    Parameters
+    ----------
+    gsfc_data : numpy.ndarray
+        2D array of GSFC ice mask data
+    model_data : numpy.ndarray 
+        2D array of model ice mask data
+    x_coords : numpy.ndarray
+        1D array of x coordinates
+    y_coords : numpy.ndarray
+        1D array of y coordinates
+    x_indices : numpy.ndarray
+        1D array of x indices for data arrays
+    y_indices : numpy.ndarray
+        1D array of y indices for data arrays
+        
+    Returns
+    -------
+    tuple
+        (gsfc_mask_aligned, model_mask_aligned)
+    """
+    n_x = len(x_coords)
+    n_y = len(y_coords)
+    
+    gsfc_mask_aligned = np.full((n_y, n_x), np.nan, dtype=np.float32)
+    model_mask_aligned = np.full((n_y, n_x), np.nan, dtype=np.float32)
+    
+    for i in prange(n_x):
+        x_idx = x_indices[i]
+        for j in prange(n_y):
+            y_idx = y_indices[j]
+            gsfc_mask_aligned[j, i] = gsfc_data[y_idx, x_idx]
+            model_mask_aligned[j, i] = model_data[y_idx, x_idx]
+    
+    return gsfc_mask_aligned, model_mask_aligned
+
 def find_calving_per_year_direct_ds(gsfc, model, year, basin='all'):
     """
     Ultra-fast version that directly creates xarray Dataset without JSON intermediate.
@@ -411,10 +593,17 @@ def find_calving_per_year_direct_ds(gsfc, model, year, basin='all'):
     """
     start_time = time.time()
     logging.info(f"Starting direct Dataset creation for year {year}")
-    
+
+    # try:    
+    #     gsfc_date_type = gsfc.ds["year"].dtype
+    #     model_date_type = model.ds["time"].dtype
+        
+    #     if gsfc_date_type != model_date_type:
+    #         logging.warning(f"Date types do not match: GSFC {gsfc_date_type}, Model {model_date_type}")
+        
     gsfc_year = gsfc.ds.sel(year=year)
-    model_year = model.ds.sel(time=year)
-    
+    model_year = model.ds.sel(time=cftime.DatetimeNoLeap(year, 1, 1, 0, 0, 0, 0, has_year_zero=True))
+
     if gsfc_year is None or model_year is None:
         raise ValueError(f"No data available for the year {year}")
     
@@ -452,12 +641,17 @@ def find_calving_per_year_direct_ds(gsfc, model, year, basin='all'):
         "PROCESSED_POINTS": total_points,
     }
     
+    # Create aligned ice mask arrays for the target grid using JIT function
+    gsfc_mask_aligned, model_mask_aligned = create_aligned_masks(
+        gsfc_data, model_data, x_coords, y_coords, x_indices, y_indices
+    )
+    
     # Create xarray Dataset directly
     ds = xr.Dataset(
         {
             'residual': (('y', 'x'), residual_grid),
-            'gsfc_ice_mask': (('y', 'x'), gsfc_data[y_indices][:, x_indices]),
-            'model_ice_mask': (('y', 'x'), model_data[y_indices][:, x_indices])
+            'gsfc_ice_mask': (('y', 'x'), gsfc_mask_aligned),
+            'model_ice_mask': (('y', 'x'), model_mask_aligned)
         },
         coords={
             'x': x_coords,
@@ -477,6 +671,7 @@ def find_calving_per_year_direct_ds(gsfc, model, year, basin='all'):
     
     # Clean up large temporary arrays
     del gsfc_data, model_data, residual_grid, x_indices, y_indices
+    del gsfc_mask_aligned, model_mask_aligned
     del abs_sum, sq_sum, sum, valid_count
     gc.collect()
     
@@ -485,6 +680,117 @@ def find_calving_per_year_direct_ds(gsfc, model, year, basin='all'):
     
     # logging.info(f"Found {ds.attrs['valid_points']} valid points out of {total_points} total")    
     return ds, statistical_analyses
+
+
+        
+#--------------------
+# NOTE: BASIN ASSIGNMENT
+#--------------------
+def standardize_basin_projection(basin_polygons_dict, gsfc_data, target_crs='EPSG:3413'):
+    """
+    Standardize basin projections to match data coordinate system and ensure proper alignment.
+    
+    Parameters:
+    -----------
+    basin_polygons_dict : dict
+        Dictionary containing basin polygons
+    gsfc_data : GSFCcalving
+        The GSFC data object containing coordinate information
+    target_crs : str
+        Target coordinate reference system (ISMIP6 standard projection)
+    
+    Returns:
+    --------
+    dict : Reprojected and aligned basin polygons
+    """
+    import pyproj
+    from shapely.ops import transform
+    from shapely.geometry import Polygon
+    
+    # Get data coordinate bounds and resolution
+    x_coords = gsfc_data.ds.x.values
+    y_coords = gsfc_data.ds.y.values
+    
+    # Create coordinate bounds
+    x_min, x_max = float(x_coords.min()), float(x_coords.max())
+    y_min, y_max = float(y_coords.min()), float(y_coords.max())
+    
+    print(f"Data coordinate bounds: X=[{x_min:.0f}, {x_max:.0f}], Y=[{y_min:.0f}, {y_max:.0f}]")
+    
+    # Define ISMIP6 Greenland projection (EPSG:3413)
+    proj_ismip6 = pyproj.CRS.from_epsg(3413)
+    
+    # Transform basins to ISMIP6 projection if needed
+    standardized_basins = {}
+    
+    for basin_name, polygon in basin_polygons_dict.items():
+        if basin_name == 'unassigned':
+            continue
+            
+        # Ensure polygon is in ISMIP6 projection
+        if hasattr(polygon, 'exterior'):
+            # Get coordinates
+            coords = list(polygon.exterior.coords)
+            
+            # Check if coordinates are already in reasonable range for ISMIP6
+            x_poly = [coord[0] for coord in coords]
+            y_poly = [coord[1] for coord in coords]
+            
+            # If coordinates seem to be in lat/lon (small values), transform them
+            if max(abs(x) for x in x_poly) < 180 and max(abs(y) for y in y_poly) < 90:
+                print(f"Converting {basin_name} from lat/lon to ISMIP6 projection...")
+                
+                # Transform from WGS84 to ISMIP6
+                transformer = pyproj.Transformer.from_crs('EPSG:4326', 'EPSG:3413', always_xy=True)
+                
+                def transform_coords(x, y, z=None):
+                    return transformer.transform(x, y)
+                
+                polygon = transform(transform_coords, polygon)
+                coords = list(polygon.exterior.coords)
+                x_poly = [coord[0] for coord in coords]
+                y_poly = [coord[1] for coord in coords]
+            
+            # Clip polygon to data bounds with buffer
+            buffer_pct = 0.1  # 10% buffer
+            x_buffer = (x_max - x_min) * buffer_pct
+            y_buffer = (y_max - y_min) * buffer_pct
+            
+            # Create clipping box
+            clip_box = Polygon([
+                (x_min - x_buffer, y_min - y_buffer),
+                (x_max + x_buffer, y_min - y_buffer),
+                (x_max + x_buffer, y_max + y_buffer),
+                (x_min - x_buffer, y_max + y_buffer)
+            ])
+            
+            # Clip polygon to data extent
+            try:
+                clipped_polygon = polygon.intersection(clip_box)
+                
+                if clipped_polygon.is_empty:
+                    print(f"Warning: {basin_name} basin is outside data extent")
+                    continue
+                    
+                # Handle MultiPolygon result
+                if hasattr(clipped_polygon, 'geoms'):
+                    # Take the largest polygon if multiple
+                    clipped_polygon = max(clipped_polygon.geoms, key=lambda p: p.area)
+                
+                standardized_basins[basin_name] = clipped_polygon
+                
+                # Print basin extent for verification
+                bounds = clipped_polygon.bounds
+                print(f"{basin_name}: X=[{bounds[0]:.0f}, {bounds[2]:.0f}], Y=[{bounds[1]:.0f}, {bounds[3]:.0f}]")
+                
+            except Exception as e:
+                print(f"Error processing {basin_name}: {e}")
+                standardized_basins[basin_name] = polygon
+    
+    print(f"Standardized {len(standardized_basins)} basins")
+    return standardized_basins
+
+
 
 # Ultra-optimized point-in-polygon using NumPy batch processing
 @jit(nopython=True)
@@ -850,6 +1156,12 @@ def format_basin_statistics(basin_names, stats):
             s = stats[year]['unassigned']
             print(f"{'unassigned':<12} {s['count']:<8} {s['sum']:<10.4f} {s['mean']:<10.4f} {s['std']:<10.4f} "
                 f"{s['min']:<10.4f} {s['max']:<10.4f} {s['rms']:<10.4f} {s['rss']:<10.4f} {s['winsorized_mean']:<10.4f} {s['outlier_weighted_mean']:<10.4f}")
+
+        
+#--------------------
+# NOTE: RESIDUAL PLOTTING
+#--------------------
+
 
 
 def make_time_residuals_plot(stats, colors, basin_names):

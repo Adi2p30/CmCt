@@ -1,3 +1,4 @@
+import logging
 import xarray as xr
 import rioxarray as rxr
 import numpy as np
@@ -28,15 +29,30 @@ class Resampling:
         """
         Reproject the input data to the target CRS and resolution.
         """
+
         input_ds = self.input_data.ds
 
         obs_x = input_ds.x
         obs_y = input_ds.y
-        
+
+        logging.info(f"Input x coordinates: {obs_x.values}")
+        logging.info(f"Input y coordinates: {obs_y.values}")
+
         if self.target_data is not None:
             target_ds = self.target_data.ds
             tgt_x = target_ds.x
             tgt_y = target_ds.y
+            
+            # Check if coordinates are identical by comparing values
+            x_same = np.array_equal(tgt_x.values, obs_x.values)
+            y_same = np.array_equal(tgt_y.values, obs_y.values)
+            
+            logging.debug(f"Target x coordinates: {tgt_x.values}")
+            logging.debug(f"Target y coordinates: {tgt_y.values}")            
+            
+            if x_same and y_same:
+                # If the target coordinates are the same as the input, return the input dataset
+                return input_ds
             
             # Use the specified interpolation method
             ds_resampled = self._perform_interpolation(input_ds, tgt_x, tgt_y)
@@ -84,7 +100,7 @@ class Resampling:
         
         for var in input_ds.data_vars:
             data_vals = input_ds[var].values.flatten()
-            valid_vals = data_vals[~np.isnan(data_vals)]
+            # valid_vals = data_vals[~np.isnan(data_vals)]
                 
         if self.interpolation_method == 'linear':
             """
@@ -275,47 +291,30 @@ class Resampling:
         
         for var in ds_resampled.data_vars:
             data_vals = ds_resampled[var].values.flatten()
-            valid_vals = data_vals[~np.isnan(data_vals)]
+            # valid_vals = data_vals[~np.isnan(data_vals)]
         
         return ds_resampled
 
 
-#  __name__ == "__main__":
-#     # Setup logging for the main script
-#     logger = logging.getLogger(__name__)
+def main():
+    import calving
+    # Setup logging for the main script    
+    obs_filename = '/Users/aditya_pachpande/Documents/GitHub/CmCt/data/calving/observed_icemask_ismip_annual.nc'
+    model_filename = '/Users/aditya_pachpande/Documents/GitHub/CmCt/test/calving/sftgif_GIS_JPL_ISSM_historical.nc'
     
-#     obs_filename = '/Users/aditya_pachpande/Documents/GitHub/CmCt/data/calving/observed_icemask_ismip_annual.nc'
-#     model_filename = '/Users/aditya_pachpande/Documents/GitHub/CmCt/test/calving/sftgif_GIS_JPL_ISSM_historical.nc'
+    gsfc = calving.load_gsfc_calving(obs_filename)
+    model = calving.load_model_calving(model_filename)
     
-#     gsfc = calving.load_gsfc_calving(obs_filename)
-#     model = calving.load_model_calving(model_filename)
+    print(gsfc.ds)
+    print(model.ds)
     
-#     print(gsfc.ds)
-#     print(model.ds)
-    
-#     resampler = Resampling(gsfc, model)
-#     resampled_data = resampler.resample()
+    resampler = Resampling(gsfc, model)
+    resampled_data = resampler.resample()
 
 
-#     print(f"\nResampled data shape: {resampled_data.dims}")
-#     print(f"Resampled data coordinates: {list(resampled_data.coords.keys())}")
-        
-#  __name__ == "__main__":
-#     # Setup logging for the main script
-#     logger = logging.getLogger(__name__)
+    print(f"\nResampled data shape: {resampled_data.dims}")
+    print(f"Resampled data coordinates: {list(resampled_data.coords.keys())}")
     
-#     obs_filename = '/Users/aditya_pachpande/Documents/GitHub/CmCt/data/calving/observed_icemask_ismip_annual.nc'
-#     model_filename = '/Users/aditya_pachpande/Documents/GitHub/CmCt/test/calving/sftgif_GIS_JPL_ISSM_historical.nc'
-    
-#     gsfc = calving.load_gsfc_calving(obs_filename)
-#     model = calving.load_model_calving(model_filename)
-    
-#     print(gsfc.ds)
-#     print(model.ds)
-    
-#     resampler = Resampling(gsfc, model)
-#     resampled_data = resampler.resample()
-
-
-#     print(f"\nResampled data shape: {resampled_data.dims}")
-#     print(f"Resampled data coordinates: {list(resampled_data.coords.keys())}")
+# if __name__ == "__main__":
+#     logging.basicConfig(level=logging.INFO)
+#     main()

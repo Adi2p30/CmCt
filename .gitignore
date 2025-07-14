@@ -188,5 +188,5 @@ data/calving
 test/calving
 notebooks/Calving/*.json
 notebooks/Calving/*.nc
-
+output
 

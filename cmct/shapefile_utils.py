@@ -180,23 +180,25 @@ def simple_plot(gdf, title="Shapefile Points"):
     plt.show()
 
 
-# BASINS EXP FILE AND POLYGON ANALYSIS
-
-def analyze_exp_files(filepath):
-    with open(filepath, 'r') as file:
-        xy_data = file.readlines()[5:]
-    # Start from line 6
-    xy = {"x": [], "y": []}
-    for i in range(len(xy_data)):
-        xy_data[i] = xy_data[i].strip().split()
-        xy_data[i] = [float(x) for x in xy_data[i]]
-        xy["x"].append(xy_data[i][0])
-        xy["y"].append(xy_data[i][1])
+# BASINS  FILE AND POLYGON ANALYSIS
+def load_basin_polygons(shapefile_path):
+    """
+    Load basin polygons from a shapefile and return a dictionary of polygons.
     
-    # Convert to numpy arrays after all data is collected
-    xy["x"] = np.array(xy["x"])
-    xy["y"] = np.array(xy["y"])
-    return xy
+    Parameters:
+    shapefile_path (str): Path to the shapefile containing basin polygons.
+    
+    Returns:
+    dict: A dictionary where keys are basin names and values are Shapely Polygon objects.
+    """
+    gdf = gpd.read_file(shapefile_path)
+    basin_polygons = {}
+
+    for idx, row in gdf.iterrows():
+        basin_name = row['SUBREGION1']  # Column name in GRE_Basins_IMBIE2_v1.3 shapefile
+        basin_polygons[basin_name] = row['geometry']
+
+    return basin_polygons
 
 
 def point_in_polygon(point, basins_polygons):
@@ -298,6 +300,114 @@ def scaling_shape_to_target(data, target_shape):
     else:
         raise TypeError("Data must be either a GeoDataFrame or numpy array")
 
+def plot_residuals_with_basins(residuals_data, basin_polygons_dict, year, figsize=(15, 12)):
+    """
+    Create an overlay plot showing residuals with basin boundaries.
+    
+    Parameters:
+    -----------
+    residuals_data : object
+        Residuals dataset containing the gridded data
+    basin_polygons_dict : dict
+        Dictionary of standardized basin polygons
+    year : int
+        Year to plot
+    figsize : tuple
+        Figure size for the plot
+    """
+    
+    # Get residual data for the specified year
+    residual_year_data = residuals_data.ds.sel(year=year)
+    rotated_data = rotated_data_year(residuals_data, year)
+    
+    # Get coordinate information from the dataset
+    x_coords = residuals_data.ds.x.values
+    y_coords = residuals_data.ds.y.values
+    
+    # Create the plot
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    # Plot the residuals as background
+    im = ax.imshow(rotated_data, 
+                   extent=[x_coords.min(), x_coords.max(), y_coords.min(), y_coords.max()],
+                   cmap='RdBu_r', 
+                   origin='lower', 
+                   aspect='equal',
+                   alpha=0.8,
+                   vmin=-1, vmax=1)  # Adjust vmin/vmax based on your data range
+    
+    # Add colorbar for residuals
+    cbar = plt.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
+    cbar.set_label('Residual Ice Mask Value', fontsize=12)
+    
+    # Overlay basin boundaries
+    for basin_name, polygon in basin_polygons_dict.items():
+        if basin_name == 'unassigned':
+            continue
+            
+        if hasattr(polygon, 'exterior'):
+            # Extract boundary coordinates
+            x_boundary, y_boundary = polygon.exterior.xy
+            
+            # Get color for this basin
+            basin_color = colors.get(basin_name, 'black')
+            
+            # Plot basin boundary
+            ax.plot(x_boundary, y_boundary, 
+                   color=basin_color, 
+                   linewidth=2, 
+                   label=f'{basin_name} Basin',
+                   alpha=0.9)
+            
+            # Add basin label at centroid
+            centroid = polygon.centroid
+            ax.annotate(basin_name, 
+                       xy=(centroid.x, centroid.y),
+                       xytext=(5, 5), 
+                       textcoords='offset points',
+                       fontsize=10, 
+                       fontweight='bold',
+                       color=basin_color,
+                       bbox=dict(boxstyle='round,pad=0.3', 
+                                facecolor='white', 
+                                alpha=0.7,
+                                edgecolor=basin_color))
+    
+    # Set labels and title
+    ax.set_xlabel('X Coordinate (m)', fontsize=12)
+    ax.set_ylabel('Y Coordinate (m)', fontsize=12)
+    ax.set_title(f'Residuals with Basin Boundaries - Year {year}', fontsize=14, fontweight='bold')
+    
+    # Add legend
+    ax.legend(loc='upper left', bbox_to_anchor=(1.05, 1), fontsize=10)
+    
+    # Add grid
+    ax.grid(True, alpha=0.3, linestyle='--')
+    
+    # Adjust layout to prevent legend cutoff
+    plt.tight_layout()
+    
+    # Add coordinate information as text
+    coord_text = f"Data bounds: X=[{x_coords.min():.0f}, {x_coords.max():.0f}], Y=[{y_coords.min():.0f}, {y_coords.max():.0f}]"
+    ax.text(0.02, 0.98, coord_text, transform=ax.transAxes, 
+            fontsize=8, verticalalignment='top',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+    
+    plt.show()
+    
+    # Print basin coverage statistics
+    print(f"\nBasin Coverage Analysis for Year {year}:")
+    print("=" * 50)
+    
+    total_data_points = np.sum(~np.isnan(rotated_data))
+    print(f"Total non-NaN data points: {total_data_points}")
+    
+    if basin_dataset and year in basin_dataset:
+        for basin_name in basin_polygons_dict.keys():
+            if basin_name in basin_dataset[year]:
+                basin_points = len(basin_dataset[year][basin_name]['data_value'])
+                coverage_pct = (basin_points / total_data_points) * 100 if total_data_points > 0 else 0
+                print(f"{basin_name:>12}: {basin_points:>6} points ({coverage_pct:>5.1f}% coverage)")
 
 ##################################
 
