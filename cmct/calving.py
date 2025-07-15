@@ -18,13 +18,15 @@ from matplotlib import rc
 from numba import jit, prange
 from scipy import stats
 
-from cmct.shapefile_utils import *
+from cmct.calving_modules import shapefile_utils
 
-from .shapefile_utils import (
-    get_nonzero_indices,
-    scaling_shape_to_target,
-    shapefile_to_xy,
-)
+# from cmct.shapefile_utils import *
+
+# from .shapefile_utils import (
+#     get_nonzero_indices,
+#     scaling_shape_to_target,
+#     shapefile_to_xy,
+# )
 
 
 def safe_float_conversion(data, default_value=np.nan):
@@ -67,6 +69,23 @@ def safe_float_conversion(data, default_value=np.nan):
 logging.basicConfig(
     level=logging.ERROR, format="%(asctime)s - %(levelname)s - %(message)s"
 )
+
+
+def load_basins(basin_filename, basins):
+    basin_data = shapefile_utils.load_basin_polygons(basin_filename)
+    if basins == "all":
+        selected_basins = ["CW", "NE", "SE", "SW", "NO", "NW", "unassigned"]
+    else:
+        selected_basins = basins
+
+    # Filter basin_data to only include selected basins
+    basin_polygons = {}
+
+    for basin_name in selected_basins:
+        if basin_name in basin_data:
+            basin_polygons[basin_name] = basin_data[basin_name]
+
+    return basin_polygons, selected_basins
 
 
 def load_gsfc_calving(filepath, basins=None):
@@ -204,5 +223,6 @@ class Residual:
     def __init__(self, residuals):
         self.ds = residuals
         self.basins = None
-        
 
+
+def basin
