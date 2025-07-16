@@ -113,16 +113,22 @@ def load_model_calving(filepath):
     return model_res
 
 
-def load_residuals(filepath):
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"File not found: {filepath}")
-    try:
-        residuals = Residual(residuals)
-    except Exception as error:
-        logging.error("Error: Failed to load residuals dataset.")
-        logging.error(error)
-        residuals = None
-    return residuals
+def load_residuals(residuals):
+    if isinstance(residuals, str):
+        if not os.path.exists(residuals):
+            raise FileNotFoundError(f"File not found: {residuals}")
+        try:
+            residuals = Residual(
+                xr.open_dataset(residuals, autoclose=True, engine="netcdf4")
+            )
+        except Exception as error:
+            logging.error("Error: Failed to load residuals dataset.")
+            logging.error(error)
+            residuals = None
+
+    # If residuals is a xarray dataset
+    elif isinstance(residuals, xr.Dataset):
+        return Residual(residuals)
 
 
 class GSFCcalving:
@@ -222,7 +228,64 @@ class Modelcalving:
 class Residual:
     def __init__(self, residuals):
         self.ds = residuals
-        self.basins = None
+
+    @property
+    def x(self):
+        return self.ds["x"]
+
+    @property
+    def y(self):
+        return self.ds["y"]
+
+    @property
+    def lat(self):
+        return self.ds["lat"]
+
+    @property
+    def lon(self):
+        return self.ds["lon"]
+
+    @property
+    def ice_mask(self):
+        return self.ds["ice_mask"]
+
+    @property
+    def time(self):
+        return self.ds["time"]
+    
+    
+    def get_basin_data(self, year, basin_id=None):
+        if basin_id is None:
+            # Return all data for the year
+            data = self.ds.sel(time=year).residual.values
+        else:
+            # Return data only for the specified basin
+            basin_mask = self.ds.basin.sel(time=year) == basin_id
+            data = self.ds.residual.sel(time=year).where(basin_mask).values
+
+        return data
+    
+    def to_netCDF(self, output_path):
+        """
+        Save the residuals dataset to a NetCDF file.
+
+        Parameters
+        ----------
+        output_path : str
+            Path to save the NetCDF file.
+        """
+        self.ds.to_netcdf(output_path, mode="w", format="NETCDF4")
+        logging.info(f"Residuals saved to {output_path}")
 
 
-def basin
+    def to_json(self, output_path):
+        """
+        Save the residuals dataset to a JSON file.
+
+        Parameters
+        ----------
+        output_path : str
+            Path to save the JSON file.
+        """
+        self.ds.to_dataframe().to_json(output_path)
+        logging.info(f"Residuals saved to {output_path}")
