@@ -10,6 +10,252 @@ import xarray as xr
 from PIL import Image
 
 
+def detect_coordinate_alignment(model_coords, target_coords, tolerance=1e-6):
+    """
+    Detect if there's a fixed offset between coordinate systems and calculate alignment parameters.
+
+    Parameters
+    ----------
+    model_coords : numpy.ndarray
+        Model coordinate values
+    target_coords : numpy.ndarray
+        Target coordinate values
+    tolerance : float
+        Tolerance for detecting uniform spacing
+
+    Returns
+    -------
+    dict
+        Dictionary containing alignment information:
+        - 'can_align': bool, whether coordinates can be aligned through trimming
+        - 'model_start_idx': int, starting index in model coordinates
+        - 'model_end_idx': int, ending index in model coordinates
+        - 'target_start_idx': int, starting index in target coordinates
+        - 'target_end_idx': int, ending index in target coordinates
+        - 'offset': float, fixed offset between coordinate systems
+    """
+    # Check if both coordinate arrays have uniform spacing
+    model_spacing = np.diff(model_coords)
+    target_spacing = np.diff(target_coords)
+
+    model_uniform = np.allclose(model_spacing, model_spacing[0], rtol=tolerance)
+    target_uniform = np.allclose(target_spacing, target_spacing[0], rtol=tolerance)
+
+    if not (model_uniform and target_uniform):
+        return {"can_align": False, "reason": "Non-uniform spacing detected"}
+
+    # Check if spacing is the same (within tolerance)
+    if not np.allclose(model_spacing[0], target_spacing[0], rtol=tolerance):
+        return {"can_align": False, "reason": "Different spacing between coordinates"}
+
+    # Calculate the offset
+    offset = model_coords[0] - target_coords[0]
+
+    # Find overlapping region
+    model_min, model_max = model_coords[0], model_coords[-1]
+    target_min, target_max = target_coords[0], target_coords[-1]
+
+    # Calculate overlap bounds
+    overlap_min = max(model_min, target_min)
+    overlap_max = min(model_max, target_max)
+
+    if overlap_min >= overlap_max:
+        return {"can_align": False, "reason": "No overlap between coordinate ranges"}
+
+    # Find indices for the overlapping region
+    model_start_idx = np.argmin(np.abs(model_coords - overlap_min))
+    model_end_idx = np.argmin(np.abs(model_coords - overlap_max)) + 1
+
+    target_start_idx = np.argmin(np.abs(target_coords - overlap_min))
+    target_end_idx = np.argmin(np.abs(target_coords - overlap_max)) + 1
+
+    return {
+        "can_align": True,
+        "model_start_idx": model_start_idx,
+        "model_end_idx": model_end_idx,
+        "target_start_idx": target_start_idx,
+        "target_end_idx": target_end_idx,
+        "offset": offset,
+        "overlap_min": overlap_min,
+        "overlap_max": overlap_max,
+    }
+
+
+def trim_to_align_shapes(model_ds, target_ds, x_dim="x", y_dim="y"):
+    """
+    Trim model dataset to align with target dataset when there's a fixed offset.
+
+    Parameters
+    ----------
+    model_ds : xarray.Dataset
+        Model dataset to trim
+    target_ds : xarray.Dataset
+        Target dataset to align with
+    x_dim : str
+        Name of x dimension (default: 'x')
+    y_dim : str
+        Name of y dimension (default: 'y')
+
+    Returns
+    -------
+    xarray.Dataset
+        Trimmed model dataset aligned with target, or original if alignment not possible
+    dict
+        Information about the alignment process
+    """
+    logging.info("Checking coordinate alignment for shape trimming...")
+
+    # Get coordinate arrays
+    model_x = model_ds[x_dim].values
+    model_y = model_ds[y_dim].values
+    target_x = target_ds[x_dim].values
+    target_y = target_ds[y_dim].values
+
+    # Check x-coordinate alignment
+    x_alignment = detect_coordinate_alignment(model_x, target_x)
+    y_alignment = detect_coordinate_alignment(model_y, target_y)
+
+    alignment_info = {
+        "x_alignment": x_alignment,
+        "y_alignment": y_alignment,
+        "trimmed": False,
+        "original_shape": (len(model_x), len(model_y)),
+        "target_shape": (len(target_x), len(target_y)),
+    }
+
+    if not x_alignment["can_align"] or not y_alignment["can_align"]:
+        logging.info(
+            f"Cannot align coordinates: X - {x_alignment.get('reason', 'Unknown')}, Y - {y_alignment.get('reason', 'Unknown')}"
+        )
+        return model_ds, alignment_info
+
+    # Perform trimming
+    try:
+        # Calculate slice indices
+        x_slice = slice(x_alignment["model_start_idx"], x_alignment["model_end_idx"])
+        y_slice = slice(y_alignment["model_start_idx"], y_alignment["model_end_idx"])
+
+        # Apply trimming
+        trimmed_ds = model_ds.isel({x_dim: x_slice, y_dim: y_slice})
+
+        # Update coordinate values to match target exactly for the overlapping region
+        target_x_overlap = target_x[
+            x_alignment["target_start_idx"] : x_alignment["target_end_idx"]
+        ]
+        target_y_overlap = target_y[
+            y_alignment["target_start_idx"] : y_alignment["target_end_idx"]
+        ]
+
+        trimmed_ds = trimmed_ds.assign_coords(
+            {x_dim: target_x_overlap, y_dim: target_y_overlap}
+        )
+
+        alignment_info.update(
+            {
+                "trimmed": True,
+                "final_shape": (len(target_x_overlap), len(target_y_overlap)),
+                "x_offset": x_alignment["offset"],
+                "y_offset": y_alignment["offset"],
+            }
+        )
+
+        logging.info(
+            f"Successfully trimmed model from {alignment_info['original_shape']} to {alignment_info['final_shape']}"
+        )
+        logging.info(
+            f"X offset: {x_alignment['offset']:.2f}, Y offset: {y_alignment['offset']:.2f}"
+        )
+
+        return trimmed_ds, alignment_info
+
+    except Exception as e:
+        logging.error(f"Error during trimming: {e}")
+        return model_ds, alignment_info
+
+
+def need_for_interpolation(gsfc, model):
+    """
+    Check if interpolation is needed between model and observation data.
+
+    Parameters
+    ----------
+    gsfc : GSFCcalving
+        Observation data object
+    model : Modelcalving
+        Model data object
+
+    Returns
+    -------
+    dict
+        Dictionary containing:
+        - 'needs_processing': bool, whether any processing is needed
+        - 'can_trim': bool, whether coordinate trimming is possible
+        - 'needs_interpolation': bool, whether interpolation is needed
+        - 'reason': str, explanation of the decision
+    """
+    model_x, model_y = model.ds.x.values, model.ds.y.values
+    gsfc_x, gsfc_y = gsfc.ds.x.values, gsfc.ds.y.values
+
+    # Check if coordinates are exactly the same
+    if np.array_equal(model_x, gsfc_x) and np.array_equal(model_y, gsfc_y):
+        return {
+            "needs_processing": False,
+            "can_trim": False,
+            "needs_interpolation": False,
+            "reason": "Coordinates are identical",
+        }
+
+    # Check if coordinate trimming is possible
+    x_alignment = detect_coordinate_alignment(model_x, gsfc_x)
+    y_alignment = detect_coordinate_alignment(model_y, gsfc_y)
+
+    if x_alignment["can_align"] and y_alignment["can_align"]:
+        return {
+            "needs_processing": True,
+            "can_trim": True,
+            "needs_interpolation": False,
+            "reason": "Coordinate alignment possible through trimming",
+            "x_offset": x_alignment["offset"],
+            "y_offset": y_alignment["offset"],
+        }
+
+    # Check if sizes are different
+    if model_x.size != gsfc_x.size or model_y.size != gsfc_y.size:
+        logging.warning(
+            f"Model x size: {model_x.size}, GSFC x size: {gsfc_x.size}, "
+            f"Model y size: {model_y.size}, GSFC y size: {gsfc_y.size}. "
+            "Interpolation needed."
+        )
+        return {
+            "needs_processing": True,
+            "can_trim": False,
+            "needs_interpolation": True,
+            "reason": "Different grid sizes - interpolation required",
+        }
+
+    # Check if spacing is different
+    model_dx = model_x[1] - model_x[0] if len(model_x) > 1 else 0
+    model_dy = model_y[1] - model_y[0] if len(model_y) > 1 else 0
+    gsfc_dx = gsfc_x[1] - gsfc_x[0] if len(gsfc_x) > 1 else 0
+    gsfc_dy = gsfc_y[1] - gsfc_y[0] if len(gsfc_y) > 1 else 0
+
+    if not np.allclose(model_dx, gsfc_dx) or not np.allclose(model_dy, gsfc_dy):
+        return {
+            "needs_processing": True,
+            "can_trim": False,
+            "needs_interpolation": True,
+            "reason": "Different grid spacing - interpolation required",
+        }
+
+    # If we get here, the grids have same size and spacing but different origins
+    return {
+        "needs_processing": True,
+        "can_trim": False,
+        "needs_interpolation": True,
+        "reason": "Different coordinate origins - interpolation required",
+    }
+
+
 class Interpolater:
     def __init__(
         self,
@@ -32,6 +278,8 @@ class Interpolater:
     def interpolate(self):
         """
         Reproject the input data to the target CRS and resolution.
+        First attempts to align coordinates through trimming if possible,
+        then falls back to interpolation if needed.
         """
         input_ds = self.input_data.ds
 
@@ -55,7 +303,19 @@ class Interpolater:
             if x_same and y_same:
                 return input_ds
 
-            ds_resampled = self._perform_interpolation(input_ds, tgt_x, tgt_y)
+            # Try to align through trimming first
+            trimmed_ds, alignment_info = trim_to_align_shapes(input_ds, target_ds)
+
+            if alignment_info["trimmed"]:
+                logging.info(
+                    "Successfully aligned datasets through coordinate trimming"
+                )
+                return trimmed_ds
+            else:
+                logging.info(
+                    "Coordinate trimming not possible, falling back to interpolation"
+                )
+                ds_resampled = self._perform_interpolation(input_ds, tgt_x, tgt_y)
 
         elif self.target_resolution is not None:
             target_x = np.linspace(obs_x.min(), obs_x.max(), self.target_resolution[0])
@@ -95,9 +355,6 @@ class Interpolater:
         xarray.Dataset
             Interpolated dataset
         """
-        for var in input_ds.data_vars:
-            data_vals = input_ds[var].values.flatten()
-
         if self.interpolation_method == "linear":
             ds_resampled = input_ds.interp(x=target_x, y=target_y, method="linear")
 
@@ -271,7 +528,10 @@ class Interpolater:
                             x=target_x, y=target_y, method="nearest"
                         )
                         ds_resampled_vars[var_name] = var_interp
-                    except:
+                    except Exception as e:
+                        logging.warning(
+                            f"Failed to interpolate variable {var_name}: {e}"
+                        )
                         ds_resampled_vars[var_name] = var_data
 
             coords_dict = {"y": target_y_values, "x": target_x_values}
@@ -288,7 +548,5 @@ class Interpolater:
                 f"Supported methods are: 'linear', 'nearest', 'cubic', 'akima', 'pchip', 'slinear', 'lanczos3d'"
             )
 
-        for var in ds_resampled.data_vars:
-            data_vals = ds_resampled[var].values.flatten()
-
         return ds_resampled
+

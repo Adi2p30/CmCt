@@ -521,6 +521,135 @@ def create_calving_dataset(gsfc, model, years, basin_polygons_dict):
         }
         stats_list.append(stats)
 
+    logging.info("Creating xarray dataset...")
+    logging.info(f"model_data_all.shape: {model_data_all.shape}")
+    logging.info(f"gsfc_data_all.shape: {gsfc_data_all.shape}")
+    logging.info(f"residuals_all.shape: {residuals_all.shape}")
+    logging.info(f"basin_mask.shape: {basin_mask.shape}")
+    logging.info(f"Years: {years}")
+
+    # Check if dimensions match, if not, try to fix by transposing
+    if model_data_all.shape != gsfc_data_all.shape:
+        logging.warning(
+            f"Shape mismatch: model_data_all.shape={model_data_all.shape}, gsfc_data_all.shape={gsfc_data_all.shape}"
+        )
+
+        # Try transposing the spatial dimensions (keeping time dimension first)
+        if (
+            model_data_all.shape[1] == gsfc_data_all.shape[2]
+            and model_data_all.shape[2] == gsfc_data_all.shape[1]
+        ):
+            logging.info("Transposing arrays to match gsfc_data_all dimensions...")
+
+            # Transpose only the arrays that need it (model_data_all and derivatives)
+            model_data_all = np.transpose(model_data_all, (0, 2, 1))
+            # gsfc_data_all is already in the correct orientation, don't transpose it
+
+            # Recompute residuals with the corrected model_data_all
+            residuals_all = compute_residuals_vectorized(gsfc_data_all, model_data_all)
+
+            # Switch x and y coordinates
+            x_coords, y_coords = y_coords, x_coords
+
+            # Transpose the basin_mask to match the new coordinate system
+            logging.info(f"Original basin_mask.shape: {basin_mask.shape}")
+            basin_mask = np.transpose(basin_mask, (1, 0))
+            logging.info(f"Transposed basin_mask.shape: {basin_mask.shape}")
+
+            logging.info(
+                f"After transpose - model_data_all.shape: {model_data_all.shape}"
+            )
+            logging.info(
+                f"After transpose - gsfc_data_all.shape: {gsfc_data_all.shape}"
+            )
+            logging.info(
+                f"After transpose - residuals_all.shape: {residuals_all.shape}"
+            )
+
+    # NOW create basins_all after all coordinate transformations are complete
+    n_years = len(years)
+
+    # Debug: check what shape we expect
+    expected_spatial_shape = gsfc_data_all.shape[1:]  # (y, x) from gsfc
+    logging.info(f"Expected spatial shape for basin_mask: {expected_spatial_shape}")
+    logging.info(f"Current basin_mask.shape: {basin_mask.shape}")
+
+    # If basin_mask still doesn't match, we need to debug this
+    if basin_mask.shape != expected_spatial_shape:
+        logging.error(
+            f"Basin mask shape {basin_mask.shape} doesn't match expected {expected_spatial_shape}"
+        )
+        logging.error(
+            "This indicates the coordinate transformation didn't work as expected"
+        )
+
+        # Let's try a different approach - force the basin_mask to match
+        if (
+            basin_mask.shape == expected_spatial_shape[::-1]
+        ):  # if it's (x, y) instead of (y, x)
+            logging.info("Forcing basin_mask transpose to match expected shape")
+            basin_mask = np.transpose(basin_mask, (1, 0))
+            logging.info(
+                f"After forced transpose - basin_mask.shape: {basin_mask.shape}"
+            )
+
+    basins_all = np.broadcast_to(
+        basin_mask[None, :, :], (n_years, basin_mask.shape[0], basin_mask.shape[1])
+    ).copy()
+
+    logging.info(f"basins_all.shape: {basins_all.shape}")
+
+    # Verify all arrays have the same shape
+    arrays_to_check = {
+        "model_data_all": model_data_all,
+        "gsfc_data_all": gsfc_data_all,
+        "residuals_all": residuals_all,
+        "basins_all": basins_all,
+    }
+
+    expected_shape = gsfc_data_all.shape  # Use gsfc as reference since it's correct
+    for name, array in arrays_to_check.items():
+        logging.info(
+            f"Checking {name}: shape {array.shape} vs expected {expected_shape}"
+        )
+        if array.shape != expected_shape:
+            raise ValueError(
+                f"Shape mismatch: {name} has shape {array.shape}, "
+                f"expected {expected_shape}"
+            )
+
+    logging.info(f"All arrays have consistent shape: {expected_shape}")
+
+    # Debug coordinate dimensions
+    logging.info(f"x_coords.shape: {x_coords.shape}")
+    logging.info(f"y_coords.shape: {y_coords.shape}")
+    logging.info(f"Data array spatial shape: {gsfc_data_all.shape[1:]}")
+
+    # Ensure coordinates match data dimensions
+    # Data arrays have shape (time, y, x) = (4, 2880, 1680)
+    # So y_coords should have length 2880 and x_coords should have length 1680
+    if (
+        len(y_coords) != gsfc_data_all.shape[1]
+        or len(x_coords) != gsfc_data_all.shape[2]
+    ):
+        logging.warning(
+            f"Coordinate dimensions don't match data: y_coords={len(y_coords)}, x_coords={len(x_coords)}"
+        )
+        logging.warning(
+            f"Expected: y_coords={gsfc_data_all.shape[1]}, x_coords={gsfc_data_all.shape[2]}"
+        )
+
+        # If coordinates are swapped, swap them back
+        if (
+            len(y_coords) == gsfc_data_all.shape[2]
+            and len(x_coords) == gsfc_data_all.shape[1]
+        ):
+            logging.info("Swapping coordinate arrays to match data dimensions")
+            x_coords, y_coords = y_coords, x_coords
+            logging.info(
+                f"After swap - x_coords.shape: {x_coords.shape}, y_coords.shape: {y_coords.shape}"
+            )
+
     # Create dataset
     ds = xr.Dataset(
         {
@@ -555,3 +684,4 @@ def create_calving_dataset(gsfc, model, years, basin_polygons_dict):
     )
 
     return ds
+
