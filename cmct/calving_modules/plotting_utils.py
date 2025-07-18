@@ -156,7 +156,7 @@ def create_basin_statistics_plot(basin_stats, year):
 
 
 def interactive_plot(residuals, basin_stats, year, basin_id, plot_type):
-    """Enhanced interactive plotting function with multiple plot types"""
+    """Interactive plotting function with multiple plot types"""
 
     if plot_type == "residual":
         basin_id = None if basin_id == -1 else int(basin_id)
@@ -175,7 +175,7 @@ def interactive_plot(residuals, basin_stats, year, basin_id, plot_type):
 
 # Also create a combined view function
 def create_combined_dashboard(residuals, basin_stats, year):
-    """Create a combined dashboard with both residual map and statistics"""
+    """Combined dashboard with both residual map and statistics"""
 
     # Create residual map
     residual_fig = create_interactive_residual_plot(residuals, year, basin_id=None)
@@ -192,7 +192,7 @@ def create_combined_dashboard(residuals, basin_stats, year):
 
 def create_time_series_plot(basin_stats, statistic="mean", colors=None):
     """
-    Create an interactive time series plot showing how statistics change over time
+    Interactive time series plot showing how statistics change over time
 
     Parameters:
     -----------
@@ -633,21 +633,19 @@ def create_correlation_matrix(basin_stats, year):
 
 
 def create_ensemble_time_series_plot(
-    basin_stats_array, model_names, statistic="mean", basin_list=None
+    basin_stats_array, model_names, statistic="mean", basin_list=None, gsfc_stats=None
 ):
     """
-    Create an interactive time series plot for ensemble basin statistics.
+    Interactive time series plot for ensemble basin statistics.
 
     Parameters
     ----------
     basin_stats_array : list
-        List of basin statistics dictionaries from multiple models
     model_names : list
-        List of model names corresponding to each basin_stats
     statistic : str, default 'mean'
         Statistic to plot ('mean', 'std', 'rms', 'sum', 'winsorized_mean', 'outlier_weighted_mean')
     basin_list : list, optional
-        List of basin names to plot. If None, plots all basins
+    gsfc_stats : dict, optional
 
     Returns
     -------
@@ -719,6 +717,38 @@ def create_ensemble_time_series_plot(
                 row=row,
                 col=1,
             )
+
+    if gsfc_stats is not None:
+        for basin_idx, basin_name in enumerate(basin_list):
+            row = basin_idx + 1
+
+            if basin_name in gsfc_stats:
+                gsfc_values = []
+                for year in years:
+                    if year in gsfc_stats[basin_name]:
+                        gsfc_values.append(gsfc_stats[basin_name][year][statistic])
+                    else:
+                        gsfc_values.append(np.nan)
+
+                fig.add_trace(
+                    go.Scatter(
+                        x=years,
+                        y=gsfc_values,
+                        mode="lines+markers",
+                        name="GSFC" if basin_idx == 0 else None,
+                        line=dict(color="black", width=4),
+                        marker=dict(size=8, color="black"),
+                        showlegend=(
+                            basin_idx == 0
+                        ),
+                        hovertemplate="<b>GSFC</b><br>"
+                        + f"Basin: {basin_name}<br>"
+                        + "Year: %{x}<br>"
+                        + f"{statistic.replace('_', ' ').title()}: %{{y:.6f}}<extra></extra>",
+                    ),
+                    row=row,
+                    col=1,
+                )
 
     # Update layout
     fig.update_layout(
@@ -804,18 +834,20 @@ def create_ensemble_statistics_summary(basin_stats_array, model_names, basin_lis
     return ensemble_summary
 
 
-def create_interactive_ensemble_plot(basin_stats_array, model_names, basin_list=None):
+def create_interactive_ensemble_plot(
+    basin_stats_array, model_names, basin_list=None, gsfc_stats=None
+):
     """
     Create an interactive ensemble plot with dropdown for statistic selection.
 
     Parameters
     ----------
     basin_stats_array : list
-        List of basin statistics dictionaries from multiple models
     model_names : list
-        List of model names corresponding to each basin_stats
     basin_list : list, optional
-        List of basin names to plot. If None, plots all basins
+    gsfc_stats : dict, optional
+        GSFC statistics dictionary with structure {basin_name: {year: {stat_name: value}}}
+        If provided, will be plotted as a bold black line
 
     Returns
     -------
@@ -852,13 +884,18 @@ def create_interactive_ensemble_plot(basin_stats_array, model_names, basin_list=
                 model_names,
                 statistic=change["new"],
                 basin_list=basin_list,
+                gsfc_stats=gsfc_stats,
             )
             fig.show()
 
     # Initial plot
     with output:
         fig = create_ensemble_time_series_plot(
-            basin_stats_array, model_names, statistic="mean", basin_list=basin_list
+            basin_stats_array,
+            model_names,
+            statistic="mean",
+            basin_list=basin_list,
+            gsfc_stats=gsfc_stats,
         )
         fig.show()
 
