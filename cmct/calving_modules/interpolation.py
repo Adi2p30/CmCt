@@ -103,7 +103,7 @@ def trim_to_align_shapes(model_ds, target_ds, x_dim="x", y_dim="y"):
     dict
         Information about the alignment process
     """
-    logging.info("Checking coordinate alignment for shape trimming...")
+    logging.warning("Checking coordinate alignment for shape trimming...")
 
     # Get coordinate arrays
     model_x = model_ds[x_dim].values

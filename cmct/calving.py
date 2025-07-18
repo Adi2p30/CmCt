@@ -449,14 +449,14 @@ def format_basin_stats(basin_stats):
     for i in basin_stats.keys():
         output_lines.append(f"=== Statistics for Year {i} ===")
         output_lines.append(
-            "Basin | Count    | Mean        | Winsorized  | Outlier Wgt | Std        | RMS"
+            "Basin | Sum       | Count    | Mean        | Winsorized  | Outlier Wgt | Std        | RMS"
         )
         output_lines.append("-" * 85)
 
         for basin_name, basin_stat in basin_stats[i].items():
             if basin_stat["count"] > 0:
                 output_lines.append(
-                    f"{basin_name:5} | {basin_stat['count']:8} | {basin_stat['mean']:11.8f} | {basin_stat['winsorized_mean']:11.8f} | {basin_stat['outlier_weighted_mean']:11.8f} | {basin_stat['std']:10.6f} | {basin_stat['rms']:10.6f}"
+                    f"{basin_name:5} | {basin_stat['sum']:8} | {basin_stat['count']:8} | {basin_stat['mean']:11.8f} | {basin_stat['winsorized_mean']:11.8f} | {basin_stat['outlier_weighted_mean']:11.8f} | {basin_stat['std']:10.6f} | {basin_stat['rms']:10.6f}"
                 )
         output_lines.append("-" * 85)
         output_lines.append("\n")
