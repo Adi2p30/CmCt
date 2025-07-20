@@ -32,25 +32,30 @@ def compute_residuals_and_stats(gsfc_values, model_values, x_indices, y_indices)
     return residuals, valid_count, abs_sum, sq_sum, residual_sum
 
 
-@jit(nopython=True)
+@jit(nopython=True, inline="always", fastmath=True)
 def point_in_polygon(x, y, polygon_x, polygon_y):
-    """Check if a single point is inside a polygon using ray casting."""
+    """Optimized point-in-polygon using winding number algorithm."""
     n = len(polygon_x)
-    inside = False
+    winding_number = 0
 
-    p1x, p1y = polygon_x[0], polygon_y[0]
-    for i in range(1, n + 1):
-        p2x, p2y = polygon_x[i % n], polygon_y[i % n]
-        if y > min(p1y, p2y):
-            if y <= max(p1y, p2y):
-                if x <= max(p1x, p2x):
-                    if p1y != p2y:
-                        xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
-                    if p1x == p2x or x <= xinters:
-                        inside = not inside
-        p1x, p1y = p2x, p2y
+    for i in range(n):
+        j = (i + 1) % n
+        if polygon_y[i] <= y:
+            if polygon_y[j] > y:  # Upward crossing
+                cross_product = (polygon_x[j] - polygon_x[i]) * (y - polygon_y[i]) - (
+                    x - polygon_x[i]
+                ) * (polygon_y[j] - polygon_y[i])
+                if cross_product > 0:
+                    winding_number += 1
+        else:
+            if polygon_y[j] <= y:  # Downward crossing
+                cross_product = (polygon_x[j] - polygon_x[i]) * (y - polygon_y[i]) - (
+                    x - polygon_x[i]
+                ) * (polygon_y[j] - polygon_y[i])
+                if cross_product < 0:
+                    winding_number -= 1
 
-    return inside
+    return winding_number != 0
 
 
 @jit(nopython=True, parallel=True)
@@ -307,7 +312,7 @@ def create_basin_mask_debug(
     return basin_mask
 
 
-@jit(nopython=True, parallel=True, cache=True)
+@jit(nopython=True, parallel=True, cache=True, fastmath=True)
 def compute_residuals_vectorized(gsfc_data, model_data):
     """Compute residuals in a vectorized manner."""
     n_time, n_y, n_x = gsfc_data.shape
@@ -325,7 +330,7 @@ def compute_residuals_vectorized(gsfc_data, model_data):
     return residuals
 
 
-@jit(nopython=True, cache=True)
+@jit(nopython=True, cache=True, fastmath=True)
 def compute_stats_vectorized(residuals):
     """Compute statistics for residuals in a vectorized manner."""
     n_time, n_y, n_x = residuals.shape
@@ -429,6 +434,7 @@ def create_calving_dataset(gsfc, model, years, basin_polygons_dict):
     model_data_all = np.stack(model_data_list, axis=0)
 
     logging.info("Computing residuals...")
+    # Compute residuals vectorized
     residuals_all = compute_residuals_vectorized(gsfc_data_all, model_data_all)
 
     logging.info("Computing statistics...")
@@ -552,7 +558,9 @@ def create_calving_dataset(gsfc, model, years, basin_polygons_dict):
             "This indicates the coordinate transformation didn't work as expected"
         )
 
-        if basin_mask.shape == expected_spatial_shape[::-1]:  # if it's (x, y) instead of (y, x)
+        if (
+            basin_mask.shape == expected_spatial_shape[::-1]
+        ):  # if it's (x, y) instead of (y, x)
             logging.info("Forcing basin_mask transpose to match expected shape")
             basin_mask = np.transpose(basin_mask, (1, 0))
             logging.info(
