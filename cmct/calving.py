@@ -138,7 +138,7 @@ class GSFCcalving:
         ice_mask_data = safe_float_conversion(self.ds["ice_mask"].values)
         self.ds["ice_mask"] = (self.ds["ice_mask"].dims, ice_mask_data)
         # self.basins = basins
-        
+
     # Direct access to variables as attributes
     @property
     def time(self):
@@ -354,7 +354,7 @@ def calculate_basin_statistics(residuals):
                 else:
                     winsorized_data = stats.mstats.winsorize(valid_data, limits=0.05)
                     winsorized_mean = float(np.mean(winsorized_data))
-                    
+
                 median_val = np.median(valid_data)
 
                 if zero_fraction > 0.8:  # For zero-heavy data
@@ -396,6 +396,7 @@ def calculate_basin_statistics(residuals):
 
     logger.info("Basin statistics calculation completed")
     return basin_stats
+
 
 def format_basin_stats(basin_stats):
     """
@@ -455,13 +456,13 @@ def calculate_gsfc_statistics(gsfc, basin_polygons_dict):
         Statistics include: count, mean, std, min, max, rms, rss, sum,
         winsorized_mean, outlier_weighted_mean
     """
-    
+
     logger = logging.getLogger(__name__)
     logger.info("Starting GSFC basin statistics calculation")
 
     # Import the required modules for basin assignment
     from cmct.calving_modules.residual_calculation import (
-        create_basin_mask_debug,
+        # create_basin_mask_debug,
         create_basin_mask_optimized,
         prepare_basin_polygons,
     )
@@ -485,16 +486,10 @@ def calculate_gsfc_statistics(gsfc, basin_polygons_dict):
 
     # Create basin mask for GSFC coordinates
     logger.info("Creating basin assignments for GSFC coordinates...")
-    try:
-        basin_mask = create_basin_mask_optimized(
-            x_coords, y_coords, basin_polygons_x, basin_polygons_y, basin_lengths
-        )
-    except Exception as e:
-        logger.warning(f"Optimized basin mask creation failed: {e}")
-        logger.info("Falling back to debug version...")
-        basin_mask = create_basin_mask_debug(
-            x_coords, y_coords, basin_polygons_x, basin_polygons_y, basin_lengths
-        )
+
+    basin_mask = create_basin_mask_optimized(
+        x_coords, y_coords, basin_polygons_x, basin_polygons_y, basin_lengths
+    )
 
     # Debug: Check basin assignment results
     unique_basins = np.unique(basin_mask)
@@ -533,7 +528,7 @@ def calculate_gsfc_statistics(gsfc, basin_polygons_dict):
                 logger.debug(
                     f"  Basin {basin_name}: {len(valid_data)} valid data points"
                 )
-    
+
                 mean_val = np.mean(valid_data)
                 std_val = np.std(valid_data)
 
