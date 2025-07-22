@@ -12,6 +12,7 @@ import xarray as xr
 from matplotlib import rc
 from numba import jit, prange
 from scipy import stats
+import time
 
 from cmct.calving_modules import shapefile_utils
 
@@ -51,6 +52,8 @@ def safe_float_conversion(data, default_value=np.nan):
         for i in range(len(flat_data)):
             try:
                 val = float(flat_data[i])
+                if i % 1000 == 0:
+                    time.sleep(0.001)
                 if np.isfinite(val):
                     flat_result[i] = val
                 else:
