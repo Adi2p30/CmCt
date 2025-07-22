@@ -107,6 +107,8 @@ def assign_basins_batch(
                 basin_ids[i] = b
                 break
             poly_start = poly_end
+        if i % 1000 == 0:
+            time.sleep(0.001)
     return basin_ids
 
 
@@ -130,7 +132,7 @@ def prepare_basin_polygons(basin_polygons_dict, target_crs="EPSG:3413"):
             all_x.extend(coords[:, 0])
             all_y.extend(coords[:, 1])
             basin_lengths.append(len(coords))
-
+            time.sleep(0.001)
             logging.info(f"Transformed basin {name}: {len(coords)} points")
 
         except Exception as e:
@@ -238,6 +240,8 @@ def _create_basin_mask_optimized_jitted(
                     mask[i][j] = b
                     break
                 pstart = pend
+        if i % 1000 == 0:
+            time.sleep(0.001)
     return mask
 
 
