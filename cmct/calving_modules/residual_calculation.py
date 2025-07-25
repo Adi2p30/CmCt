@@ -1,3 +1,4 @@
+import gc
 import logging
 import time
 
@@ -32,7 +33,7 @@ def compute_residuals_and_stats(gsfc_values, model_values, x_indices, y_indices)
     return residuals, valid_count, abs_sum, sq_sum, residual_sum
 
 
-@jit(nopython=True, inline="always", fastmath=True)
+@jit(nopython=True, inline="always", fastmath=False)
 def point_in_polygon(x, y, polygon_x, polygon_y):
     """Optimized point-in-polygon using winding number algorithm."""
     n = len(polygon_x)
@@ -56,40 +57,6 @@ def point_in_polygon(x, y, polygon_x, polygon_y):
                     winding_number -= 1
 
     return winding_number != 0
-
-
-@jit(nopython=True, parallel=True)
-def assign_basins_batch(
-    x_coords,
-    y_coords,
-    basin_polygons_x,
-    basin_polygons_y,
-    basin_lengths,
-    batch_start,
-    batch_end,
-):
-    """Assign basin IDs to a batch of points."""
-    batch_size = batch_end - batch_start
-    basin_ids = np.full(batch_size, -1, dtype=np.int32)
-    n_basins = len(basin_lengths)
-
-    for i in prange(batch_size):
-        x = x_coords[batch_start + i]
-        y = y_coords[batch_start + i]
-
-        polygon_start = 0
-        for basin_idx in range(n_basins):
-            polygon_end = polygon_start + basin_lengths[basin_idx]
-            poly_x = basin_polygons_x[polygon_start:polygon_end]
-            poly_y = basin_polygons_y[polygon_start:polygon_end]
-
-            if point_in_polygon(x, y, poly_x, poly_y):
-                basin_ids[i] = basin_idx
-                break
-
-            polygon_start = polygon_end
-
-    return basin_ids
 
 
 def prepare_basin_polygons(basin_polygons_dict, target_crs="EPSG:3413"):
@@ -145,87 +112,6 @@ def prepare_basin_polygons(basin_polygons_dict, target_crs="EPSG:3413"):
         np.array(all_y, dtype=np.float32),
         np.array(basin_lengths, dtype=np.int32),
     )
-
-
-def process_year_data(
-    gsfc_data,
-    model_data,
-    x_coords,
-    y_coords,
-    basin_polygons_x,
-    basin_polygons_y,
-    basin_lengths,
-    basin_names,
-    year,
-):
-    """Process a single year of data with basin assignments."""
-
-    # Get coordinate indices
-    gsfc_x = gsfc_data.x.values.astype(np.float32)
-    gsfc_y = gsfc_data.y.values.astype(np.float32)
-
-    x_indices = np.searchsorted(gsfc_x, x_coords)
-    x_indices = np.clip(x_indices, 0, len(gsfc_x) - 1)
-
-    y_indices = np.searchsorted(gsfc_y, y_coords)
-    y_indices = np.clip(y_indices, 0, len(gsfc_y) - 1)
-
-    # Convert ice mask data
-    gsfc_values = gsfc_data.ice_mask.values.astype(np.float32)
-    model_values = model_data.ice_mask.values.astype(np.float32)
-
-    # Flatten coordinates for processing
-    x_flat = np.repeat(x_coords, len(y_coords))
-    y_flat = np.tile(y_coords, len(x_coords))
-    x_idx_flat = np.repeat(x_indices, len(y_indices))
-    y_idx_flat = np.tile(y_indices, len(x_indices))
-
-    # Compute residuals
-    residuals, valid_count, abs_sum, sq_sum, residual_sum = compute_residuals_and_stats(
-        gsfc_values, model_values, x_idx_flat, y_idx_flat
-    )
-
-    # Assign basins in sequential batches (removed concurrency)
-    n_points = len(x_flat)
-    batch_size = 50000
-    basin_assignments = np.full(n_points, -1, dtype=np.int32)
-
-    # Process batches sequentially instead of in parallel
-    for start in range(0, n_points, batch_size):
-        end = min(start + batch_size, n_points)
-        batch_result = assign_basins_batch(
-            x_flat,
-            y_flat,
-            basin_polygons_x,
-            basin_polygons_y,
-            basin_lengths,
-            start,
-            end,
-        )
-        basin_assignments[start:end] = batch_result
-
-    # Reshape to 2D grids
-    n_x, n_y = len(x_coords), len(y_coords)
-    residual_grid = residuals.reshape(n_x, n_y).T
-    basin_grid = basin_assignments.reshape(n_x, n_y).T
-
-    # Get aligned ice masks
-    gsfc_aligned = gsfc_values[np.ix_(y_indices, x_indices)]
-    model_aligned = model_values[np.ix_(y_indices, x_indices)]
-
-    # Calculate statistics
-    avg_residual = abs_sum / valid_count if valid_count > 0 else 0.0
-    rms_residual = np.sqrt(sq_sum / valid_count) if valid_count > 0 else 0.0
-
-    stats = {
-        "avg_abs_residual": round(avg_residual, 3),
-        "rms_residual": round(rms_residual, 3),
-        "sum_residual": round(residual_sum, 3),
-        "valid_points": int(valid_count),
-        "total_points": n_points,
-    }
-
-    return residual_grid, basin_grid, gsfc_aligned, model_aligned, stats
 
 
 @jit(nopython=True, parallel=False, cache=True)
@@ -312,7 +198,7 @@ def create_basin_mask_debug(
     return basin_mask
 
 
-@jit(nopython=True, parallel=True, cache=True, fastmath=True)
+@jit(nopython=True, parallel=False, cache=True, fastmath=False)
 def compute_residuals_vectorized(gsfc_data, model_data):
     """Compute residuals in a vectorized manner."""
     n_time, n_y, n_x = gsfc_data.shape
@@ -330,7 +216,7 @@ def compute_residuals_vectorized(gsfc_data, model_data):
     return residuals
 
 
-@jit(nopython=True, cache=True, fastmath=True)
+@jit(nopython=True, cache=True, fastmath=False)
 def compute_stats_vectorized(residuals):
     """Compute statistics for residuals in a vectorized manner."""
     n_time, n_y, n_x = residuals.shape
@@ -370,87 +256,46 @@ def compute_stats_vectorized(residuals):
     return stats
 
 
-def create_calving_dataset(gsfc, model, years, basin_polygons_dict):
+def compute_basin_mask_once(gsfc, model, basin_polygons_dict, year=None):
     """
-    Create a comprehensive dataset with calving data across multiple years and basins.
-    OPTIMIZED VERSION using pure numpy arrays for maximum speed.
+    Compute basin mask once using the first available year of data.
 
     Parameters
     ----------
     gsfc : GSFCcalving
         GSFC calving data object
     model : ModelCalving
-        Model calving data object
-    years : list
-        List of years to process
+        Model calving data object (first ensemble member)
     basin_polygons_dict : dict
         Dictionary of basin polygons
+    year : int, optional
+        Specific year to use for mask creation. If None, uses first available year.
 
     Returns
     -------
-    xarray.Dataset
-        Dataset with dimensions (time, y, x) and variables for residuals,
-        basin assignments, and ice masks
+    tuple
+        (basin_mask, basin_names, x_coords, y_coords)
     """
+    logging.info("Computing basin mask once for all ensemble members...")
 
-    logging.info("Starting optimized calving dataset creation...")
-    start_time = time.time()
-
-    # Prepare basin data once
+    # Prepare basin data
     basin_names, basin_polygons_x, basin_polygons_y, basin_lengths = (
         prepare_basin_polygons(basin_polygons_dict)
     )
 
-    # Get coordinate arrays - use model coordinates as reference
-    model_sample = model.ds.sel(time=years[0])
+    # Get coordinate arrays from model - use first available year if not specified
+    if year is None:
+        year = model.ds.time.values[0]
+
+    model_sample = model.ds.sel(time=year)
     x_coords = model_sample.x.values.astype(np.float32)
     y_coords = model_sample.y.values.astype(np.float32)
 
     logging.info(f"Grid dimensions: {len(y_coords)} x {len(x_coords)}")
+    logging.info(f"Using year {year} for basin mask creation")
 
-    gsfc_data_list = []
-    for year in years:
-        gsfc_year = gsfc.ds.sel(year=year)
-
-        gsfc_x = gsfc_year.x.values
-        gsfc_y = gsfc_year.y.values
-
-        x_indices = np.searchsorted(gsfc_x, x_coords)
-        x_indices = np.clip(x_indices, 0, len(gsfc_x) - 1)
-        y_indices = np.searchsorted(gsfc_y, y_coords)
-        y_indices = np.clip(y_indices, 0, len(gsfc_y) - 1)
-
-        gsfc_aligned = gsfc_year.ice_mask.values[np.ix_(y_indices, x_indices)].astype(
-            np.float32
-        )
-        gsfc_data_list.append(gsfc_aligned)
-
-    gsfc_data_all = np.stack(gsfc_data_list, axis=0)
-    model_data_list = []
-    for year in years:
-        model_year = model.ds.sel(time=year)
-        model_data_list.append(model_year.ice_mask.values.astype(np.float32))
-
-    model_data_all = np.stack(model_data_list, axis=0)
-
-    logging.info("Computing residuals...")
-    # Compute residuals vectorized
-    residuals_all = compute_residuals_vectorized(gsfc_data_all, model_data_all)
-
-    logging.info("Computing statistics...")
-    # Compute statistics vectorized
-    stats_array = compute_stats_vectorized(residuals_all)
-
-    logging.info("Creating basin assignments...")
-
-    # Debug: Print coordinate ranges before basin assignment
-    logging.info(
-        f"Data coordinates: X=[{x_coords.min():.1f}, {x_coords.max():.1f}], Y=[{y_coords.min():.1f}, {y_coords.max():.1f}]"
-    )
-    logging.info(
-        f"Basin polygon coordinates: X=[{basin_polygons_x.min():.1f}, {basin_polygons_x.max():.1f}], Y=[{basin_polygons_y.min():.1f}, {basin_polygons_y.max():.1f}]"
-    )
-
+    # Create basin mask
+    logging.info("Creating basin mask...")
     try:
         basin_mask = create_basin_mask_optimized(
             x_coords, y_coords, basin_polygons_x, basin_polygons_y, basin_lengths
@@ -461,6 +306,8 @@ def create_calving_dataset(gsfc, model, years, basin_polygons_dict):
         basin_mask = create_basin_mask_debug(
             x_coords, y_coords, basin_polygons_x, basin_polygons_y, basin_lengths
         )
+
+    # Log basin assignment statistics
     unique_basins = np.unique(basin_mask)
     logging.info(f"Basin assignment complete. Unique basin IDs: {unique_basins}")
 
@@ -482,11 +329,119 @@ def create_calving_dataset(gsfc, model, years, basin_polygons_dict):
         f"Basin assignment rate: {assigned_points}/{total_points} ({assignment_rate:.1f}%)"
     )
 
+    return basin_mask, basin_names, x_coords, y_coords
+
+
+def create_calving_dataset_with_precomputed_mask(
+    gsfc, model, years, basin_mask, basin_names, x_coords, y_coords
+):
+    """
+    Create a comprehensive dataset with calving data using a precomputed basin mask.
+
+    Parameters
+    ----------
+    gsfc : GSFCcalving
+        GSFC calving data object
+    model : ModelCalving
+        Model calving data object
+    years : list
+        List of years to process
+    basin_mask : np.ndarray
+        Precomputed basin mask (y, x)
+    basin_names : list
+        List of basin names
+    x_coords : np.ndarray
+        X coordinates
+    y_coords : np.ndarray
+        Y coordinates
+
+    Returns
+    -------
+    xarray.Dataset
+        Dataset with dimensions (time, y, x) and variables for residuals,
+        basin assignments, and ice masks
+    """
+    logging.info("Creating calving dataset with precomputed basin mask...")
+    start_time = time.time()
+
+    # Prepare GSFC data for all years
+    gsfc_data_list = []
+    for year in years:
+        gsfc_year = gsfc.ds.sel(year=year)
+
+        # Use xarray's interpolation to ensure exact coordinate matching
+        # Interpolate GSFC data to the exact coordinates used for the basin mask
+        gsfc_interp = gsfc_year.ice_mask.interp(x=x_coords, y=y_coords, method="linear")
+        gsfc_aligned = gsfc_interp.values.astype(np.float32)
+
+        # Handle any NaN values that might result from interpolation
+        gsfc_aligned = np.nan_to_num(gsfc_aligned, nan=0.0)
+
+        gsfc_data_list.append(gsfc_aligned)
+
+    gsfc_data_all = np.stack(gsfc_data_list, axis=0)
+    logging.info(f"GSFC data shape: {gsfc_data_all.shape}")
+
+    # Prepare model data for all years
+    model_data_list = []
+    for year in years:
+        model_year = model.ds.sel(time=year)
+
+        # Instead of using searchsorted, use xarray's interpolation to ensure exact coordinate matching
+        # Interpolate model data to the exact coordinates used for the basin mask
+        model_interp = model_year.ice_mask.interp(
+            x=x_coords, y=y_coords, method="linear"
+        )
+        model_aligned = model_interp.values.astype(np.float32)
+
+        # Handle any NaN values that might result from interpolation
+        model_aligned = np.nan_to_num(model_aligned, nan=0.0)
+
+        model_data_list.append(model_aligned)
+
+    model_data_all = np.stack(model_data_list, axis=0)
+
+    # Check if model data needs to be transposed to match GSFC data dimension order
+    if model_data_all.shape != gsfc_data_all.shape:
+        logging.info(
+            f"Transposing model data from {model_data_all.shape} to match GSFC shape {gsfc_data_all.shape}"
+        )
+        # Transpose the spatial dimensions (keep time dimension as first)
+        model_data_all = model_data_all.transpose(0, 2, 1)
+
+    logging.info(f"Model data shape after alignment: {model_data_all.shape}")
+    logging.info(f"Basin mask shape: {basin_mask.shape}")
+
+    # Ensure all data arrays have consistent shapes
+    if gsfc_data_all.shape != model_data_all.shape:
+        logging.error(
+            f"Shape mismatch after transpose: GSFC {gsfc_data_all.shape} vs Model {model_data_all.shape}"
+        )
+        raise ValueError(
+            f"Data shape mismatch after transpose: GSFC {gsfc_data_all.shape} vs Model {model_data_all.shape}"
+        )
+
+    if gsfc_data_all.shape[1:] != basin_mask.shape:
+        logging.error(
+            f"Basin mask shape mismatch: Data {gsfc_data_all.shape[1:]} vs Mask {basin_mask.shape}"
+        )
+        raise ValueError(
+            f"Basin mask shape mismatch: Data {gsfc_data_all.shape[1:]} vs Mask {basin_mask.shape}"
+        )
+
+    logging.info("Computing residuals...")
+    residuals_all = compute_residuals_vectorized(gsfc_data_all, model_data_all)
+
+    logging.info("Computing statistics...")
+    stats_array = compute_stats_vectorized(residuals_all)
+
+    # Broadcast basin mask to all years
     n_years = len(years)
     basins_all = np.broadcast_to(
         basin_mask[None, :, :], (n_years, basin_mask.shape[0], basin_mask.shape[1])
     ).copy()
 
+    # Create statistics list
     stats_list = []
     for i, year in enumerate(years):
         stats = {
@@ -510,115 +465,8 @@ def create_calving_dataset(gsfc, model, years, basin_polygons_dict):
         stats_list.append(stats)
 
     logging.info("Creating xarray dataset...")
-    logging.info(f"model_data_all.shape: {model_data_all.shape}")
-    logging.info(f"gsfc_data_all.shape: {gsfc_data_all.shape}")
-    logging.info(f"residuals_all.shape: {residuals_all.shape}")
-    logging.info(f"basin_mask.shape: {basin_mask.shape}")
-    logging.info(f"Years: {years}")
 
-    # Check if dimensions match, if not, try to fix by transposing
-    if model_data_all.shape != gsfc_data_all.shape:
-        logging.warning(
-            f"Shape mismatch: model_data_all.shape={model_data_all.shape}, gsfc_data_all.shape={gsfc_data_all.shape}"
-        )
-        if (
-            model_data_all.shape[1] == gsfc_data_all.shape[2]
-            and model_data_all.shape[2] == gsfc_data_all.shape[1]
-        ):
-            logging.info("Transposing arrays to match gsfc_data_all dimensions...")
-            model_data_all = np.transpose(model_data_all, (0, 2, 1))
-            residuals_all = compute_residuals_vectorized(gsfc_data_all, model_data_all)
-
-            x_coords, y_coords = y_coords, x_coords
-
-            logging.info(f"Original basin_mask.shape: {basin_mask.shape}")
-            basin_mask = np.transpose(basin_mask, (1, 0))
-            logging.info(f"Transposed basin_mask.shape: {basin_mask.shape}")
-
-            logging.info(
-                f"After transpose - model_data_all.shape: {model_data_all.shape}"
-            )
-            logging.info(
-                f"After transpose - gsfc_data_all.shape: {gsfc_data_all.shape}"
-            )
-            logging.info(
-                f"After transpose - residuals_all.shape: {residuals_all.shape}"
-            )
-
-    n_years = len(years)
-    expected_spatial_shape = gsfc_data_all.shape[1:]  # (y, x) from gsfc
-    logging.info(f"Expected spatial shape for basin_mask: {expected_spatial_shape}")
-    logging.info(f"Current basin_mask.shape: {basin_mask.shape}")
-
-    if basin_mask.shape != expected_spatial_shape:
-        logging.error(
-            f"Basin mask shape {basin_mask.shape} doesn't match expected {expected_spatial_shape}"
-        )
-        logging.error(
-            "This indicates the coordinate transformation didn't work as expected"
-        )
-
-        if (
-            basin_mask.shape == expected_spatial_shape[::-1]
-        ):  # if it's (x, y) instead of (y, x)
-            logging.info("Forcing basin_mask transpose to match expected shape")
-            basin_mask = np.transpose(basin_mask, (1, 0))
-            logging.info(
-                f"After forced transpose - basin_mask.shape: {basin_mask.shape}"
-            )
-
-    basins_all = np.broadcast_to(
-        basin_mask[None, :, :], (n_years, basin_mask.shape[0], basin_mask.shape[1])
-    ).copy()
-
-    logging.info(f"basins_all.shape: {basins_all.shape}")
-
-    # Verify all arrays have the same shape
-    arrays_to_check = {
-        "model_data_all": model_data_all,
-        "gsfc_data_all": gsfc_data_all,
-        "residuals_all": residuals_all,
-        "basins_all": basins_all,
-    }
-
-    expected_shape = gsfc_data_all.shape
-    for name, array in arrays_to_check.items():
-        logging.info(
-            f"Checking {name}: shape {array.shape} vs expected {expected_shape}"
-        )
-        if array.shape != expected_shape:
-            raise ValueError(
-                f"Shape mismatch: {name} has shape {array.shape}, "
-                f"expected {expected_shape}"
-            )
-
-    logging.info(f"All arrays have consistent shape: {expected_shape}")
-    logging.info(f"x_coords.shape: {x_coords.shape}")
-    logging.info(f"y_coords.shape: {y_coords.shape}")
-    logging.info(f"Data array spatial shape: {gsfc_data_all.shape[1:]}")
-
-    # So y_coords should have length 2880 and x_coords should have length 1680
-    if (
-        len(y_coords) != gsfc_data_all.shape[1]
-        or len(x_coords) != gsfc_data_all.shape[2]
-    ):
-        logging.warning(
-            f"Coordinate dimensions don't match data: y_coords={len(y_coords)}, x_coords={len(x_coords)}"
-        )
-        logging.warning(
-            f"Expected: y_coords={gsfc_data_all.shape[1]}, x_coords={gsfc_data_all.shape[2]}"
-        )
-
-        if (
-            len(y_coords) == gsfc_data_all.shape[2]
-            and len(x_coords) == gsfc_data_all.shape[1]
-        ):
-            logging.info("Swapping coordinate arrays to match data dimensions")
-            x_coords, y_coords = y_coords, x_coords
-            logging.info(
-                f"After swap - x_coords.shape: {x_coords.shape}, y_coords.shape: {y_coords.shape}"
-            )
-
+    # Create dataset
     ds = xr.Dataset(
         {
             "residual": (["time", "y", "x"], residuals_all),
@@ -640,14 +488,31 @@ def create_calving_dataset(gsfc, model, years, basin_polygons_dict):
         },
     )
 
+    # Add statistics as variables
     stats_df = pd.DataFrame(stats_list)
     for col in stats_df.columns:
         if col != "year":
             ds[f"stats_{col}"] = ("time", stats_df[col].values)
 
     end_time = time.time()
-    logging.info(
-        f"Optimized dataset creation completed in {end_time - start_time:.2f} seconds"
-    )
+    logging.info(f"Dataset creation completed in {end_time - start_time:.2f} seconds")
 
     return ds
+
+
+# Backward compatibility function - kept for legacy code
+def create_calving_dataset(gsfc, model, years, basin_polygons_dict):
+    """
+    Legacy function that computes basin mask and creates dataset.
+    For new code, use compute_basin_mask_once() followed by
+    create_calving_dataset_with_precomputed_mask().
+    """
+    # Compute basin mask
+    basin_mask, basin_names, x_coords, y_coords = compute_basin_mask_once(
+        gsfc, model, basin_polygons_dict, years[0]
+    )
+
+    # Create dataset with precomputed mask
+    return create_calving_dataset_with_precomputed_mask(
+        gsfc, model, years, basin_mask, basin_names, x_coords, y_coords
+    )
