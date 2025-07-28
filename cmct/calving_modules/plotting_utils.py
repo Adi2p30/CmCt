@@ -633,10 +633,15 @@ def create_correlation_matrix(basin_stats, year):
 
 
 def create_ensemble_time_series_plot(
-    basin_stats_array, model_names, statistic="mean", basin_list=None, gsfc_stats=None
+    basin_stats_array,
+    model_names,
+    statistic="mean",
+    basin_list=None,
+    gsfc_stats=None,
+    important_models=None,
 ):
     """
-    Interactive time series plot for ensemble basin statistics.
+    Interactive time series plot for ensemble basin statistics with improved visual hierarchy.
 
     Parameters
     ----------
@@ -646,11 +651,13 @@ def create_ensemble_time_series_plot(
         Statistic to plot ('mean', 'std', 'rms', 'sum', 'winsorized_mean', 'outlier_weighted_mean')
     basin_list : list, optional
     gsfc_stats : dict, optional
+    important_models : list, optional
+        List of 3-5 model names that should be highlighted with bolder lines
 
     Returns
     -------
     plotly.graph_objects.Figure
-        Interactive time series plot with dropdown for statistic selection
+        Interactive time series plot with improved visual hierarchy
     """
     if not basin_stats_array:
         raise ValueError("basin_stats_array cannot be empty")
@@ -662,27 +669,32 @@ def create_ensemble_time_series_plot(
     if basin_list is None:
         basin_list = list(basin_stats_array[0][years[0]].keys())
 
+    # Auto-select top 3-5 important models if not specified
+    if important_models is None:
+        # Use first 3-5 models as important by default
+        important_models = model_names[: min(5, len(model_names))]
+
     # Create subplot with one plot per basin
     fig = make_subplots(
         rows=len(basin_list),
         cols=1,
         subplot_titles=[f"Basin {basin}" for basin in basin_list],
         shared_xaxes=True,
-        vertical_spacing=0.02,
+        vertical_spacing=0.04,  # Increased spacing for better readability
     )
 
-    # Define colors for different models
+    # Define colors for different models with better contrast
     colors = [
-        "#1f77b4",
-        "#ff7f0e",
-        "#2ca02c",
-        "#d62728",
-        "#9467bd",
-        "#8c564b",
-        "#e377c2",
-        "#7f7f7f",
-        "#bcbd22",
-        "#17becf",
+        "#1f77b4",  # Blue
+        "#ff7f0e",  # Orange
+        "#2ca02c",  # Green
+        "#d62728",  # Red
+        "#9467bd",  # Purple
+        "#8c564b",  # Brown
+        "#e377c2",  # Pink
+        "#7f7f7f",  # Gray
+        "#bcbd22",  # Olive
+        "#17becf",  # Cyan
     ]
 
     # Plot each basin
@@ -700,14 +712,21 @@ def create_ensemble_time_series_plot(
                 else:
                     values.append(np.nan)
 
+            # Determine visual properties based on importance
+            is_important = model_name in important_models
+            line_width = 4 if is_important else 1
+            opacity = 1.0 if is_important else 0.2
+            marker_size = 8 if is_important else 5
+
             fig.add_trace(
                 go.Scatter(
                     x=years,
                     y=values,
                     mode="lines+markers",
                     name=f"{model_name}" if basin_idx == 0 else None,
-                    line=dict(color=colors[model_idx % len(colors)]),
-                    marker=dict(size=6),
+                    line=dict(color=colors[model_idx % len(colors)], width=line_width),
+                    marker=dict(size=marker_size),
+                    opacity=opacity,
                     showlegend=(basin_idx == 0),  # Only show legend for first subplot
                     hovertemplate=f"<b>{model_name}</b><br>"
                     + f"Basin: {basin_name}<br>"
@@ -718,6 +737,7 @@ def create_ensemble_time_series_plot(
                 col=1,
             )
 
+    # Add GSFC data if provided (always highlighted as most important)
     if gsfc_stats is not None:
         for basin_idx, basin_name in enumerate(basin_list):
             row = basin_idx + 1
@@ -735,13 +755,11 @@ def create_ensemble_time_series_plot(
                         x=years,
                         y=gsfc_values,
                         mode="lines+markers",
-                        name="GSFC" if basin_idx == 0 else None,
+                        name="GSFC (Reference)" if basin_idx == 0 else None,
                         line=dict(color="black", width=4),
-                        marker=dict(size=8, color="black"),
-                        showlegend=(
-                            basin_idx == 0
-                        ),
-                        hovertemplate="<b>GSFC</b><br>"
+                        marker=dict(size=10, color="black"),
+                        showlegend=(basin_idx == 0),
+                        hovertemplate="<b>GSFC (Reference)</b><br>"
                         + f"Basin: {basin_name}<br>"
                         + "Year: %{x}<br>"
                         + f"{statistic.replace('_', ' ').title()}: %{{y:.6f}}<extra></extra>",
@@ -750,21 +768,55 @@ def create_ensemble_time_series_plot(
                     col=1,
                 )
 
-    # Update layout
+    # Improved layout with legend positioned outside plot area
     fig.update_layout(
-        title=f"Ensemble Time Series: {statistic.replace('_', ' ').title()} by Basin",
-        height=300 * len(basin_list),
+        title=dict(
+            text=f"Ensemble Time Series: {statistic.replace('_', ' ').title()} by Basin",
+            font=dict(size=16, family="Arial, sans-serif"),
+            x=0.5,
+            xanchor="center",
+        ),
+        height=400
+        * len(basin_list),  # Reduced height per subplot for better proportions
+        width=1400,  # Increased width to accommodate external legend
         showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=0.98,
+            xanchor="left",
+            x=1.02,  # Position legend outside plot area
+            bgcolor="rgba(255,255,255,0.8)",
+            bordercolor="rgba(0,0,0,0.2)",
+            borderwidth=1,
+            font=dict(size=11),
+        ),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        margin=dict(l=80, r=150, t=80, b=80),  # Increased margins for better spacing
     )
 
-    # Update x-axis labels
-    fig.update_xaxes(title_text="Year", row=len(basin_list), col=1)
+    # Update x-axis labels with improved formatting
+    fig.update_xaxes(
+        title_text="Year",
+        row=len(basin_list),
+        col=1,
+        title_font=dict(size=14, family="Arial, sans-serif"),
+        tickfont=dict(size=12),
+        showgrid=True,
+        gridcolor="rgba(128,128,128,0.2)",
+    )
 
-    # Update y-axis labels
+    # Update y-axis labels with improved formatting
     for i in range(len(basin_list)):
         fig.update_yaxes(
-            title_text=statistic.replace("_", " ").title(), row=i + 1, col=1
+            title_text=f"{statistic.replace('_', ' ').title()}",
+            row=i + 1,
+            col=1,
+            title_font=dict(size=12, family="Arial, sans-serif"),
+            tickfont=dict(size=11),
+            showgrid=True,
+            gridcolor="rgba(128,128,128,0.2)",
         )
 
     return fig
@@ -835,10 +887,14 @@ def create_ensemble_statistics_summary(basin_stats_array, model_names, basin_lis
 
 
 def create_interactive_ensemble_plot(
-    basin_stats_array, model_names, basin_list=None, gsfc_stats=None
+    basin_stats_array,
+    model_names,
+    basin_list=None,
+    gsfc_stats=None,
+    important_models=None,
 ):
     """
-    Create an interactive ensemble plot with dropdown for statistic selection.
+    Create an interactive ensemble plot with dropdown for statistic selection and improved visual hierarchy.
 
     Parameters
     ----------
@@ -848,11 +904,14 @@ def create_interactive_ensemble_plot(
     gsfc_stats : dict, optional
         GSFC statistics dictionary with structure {basin_name: {year: {stat_name: value}}}
         If provided, will be plotted as a bold black line
+    important_models : list, optional
+        List of 3-5 model names that should be highlighted with bolder lines.
+        If None, automatically selects first 3-5 models as important.
 
     Returns
     -------
     ipywidgets.VBox
-        Interactive widget with dropdown and plot
+        Interactive widget with dropdown and plot featuring visual hierarchy
     """
 
     # Available statistics
@@ -865,26 +924,41 @@ def create_interactive_ensemble_plot(
         ("Outlier Weighted Mean", "outlier_weighted_mean"),
     ]
 
-    # Create dropdown widget
+    # Auto-select important models if not provided
+    if important_models is None:
+        important_models = model_names[: min(5, len(model_names))]
+
+    # Create widgets with improved styling
     stat_dropdown = widgets.Dropdown(
         options=stats_options,
         value="mean",
         description="Statistic:",
-        style={"description_width": "initial"},
+        style={"description_width": "80px"},
+        layout=widgets.Layout(width="300px"),
+    )
+
+    # Create multi-select widget for important models
+    important_models_widget = widgets.SelectMultiple(
+        options=model_names,
+        value=important_models,
+        style={"description_width": "100px"},
+        layout=widgets.Layout(width="400px", height="150px"),
     )
 
     # Create output widget for plot
     output = widgets.Output()
 
-    def update_plot(change):
+    def update_plot(change=None):
         with output:
             output.clear_output(wait=True)
+            current_important = list(important_models_widget.value)
             fig = create_ensemble_time_series_plot(
                 basin_stats_array,
                 model_names,
-                statistic=change["new"],
+                statistic=stat_dropdown.value,
                 basin_list=basin_list,
                 gsfc_stats=gsfc_stats,
+                important_models=current_important,
             )
             fig.show()
 
@@ -896,10 +970,614 @@ def create_interactive_ensemble_plot(
             statistic="mean",
             basin_list=basin_list,
             gsfc_stats=gsfc_stats,
+            important_models=important_models,
         )
         fig.show()
 
-    # Connect dropdown to update function
+    # Connect widgets to update function
     stat_dropdown.observe(update_plot, names="value")
+    important_models_widget.observe(update_plot, names="value")
 
-    return widgets.VBox([stat_dropdown, output])
+    # Create control panel
+    controls = widgets.HBox([stat_dropdown, important_models_widget])
+
+    # Add informational text
+    info_text = widgets.HTML(
+        value="<b>Visual Hierarchy:</b> Selected models are highlighted with bolder lines and full opacity. "
+        "Other models are shown with thinner lines and reduced opacity for better focus."
+    )
+
+    return widgets.VBox([info_text, controls, output])
+
+
+def calculate_ensemble_accuracy_metrics(
+    basin_stats_array, model_names, statistic="mean"
+):
+    """
+    Calculate accuracy metrics for ensemble members.
+
+    Parameters
+    ----------
+    basin_stats_array : list
+        List of basin statistics for each model
+    model_names : list
+        List of model names
+    statistic : str
+        Statistic to analyze
+
+    Returns
+    -------
+    dict
+        Dictionary with accuracy metrics for each model
+    """
+    accuracy_metrics = {}
+
+    # Get all years and basins from first model
+    if not basin_stats_array:
+        return accuracy_metrics
+
+    first_model = basin_stats_array[0]
+    years = sorted(first_model.keys())
+    basins = list(first_model[years[0]].keys())
+
+    for basin in basins:
+        accuracy_metrics[basin] = {}
+
+        for year in years:
+            # Collect all model values for this year/basin/statistic
+            values = []
+            for stats in basin_stats_array:
+                if year in stats and basin in stats[year]:
+                    value = stats[year][basin].get(statistic, np.nan)
+                    if not np.isnan(value):
+                        values.append(value)
+
+            if len(values) > 1:
+                ensemble_mean = np.mean(values)
+                ensemble_std = np.std(values)
+
+                # Calculate accuracy metrics for each model
+                model_accuracy = []
+                for i, stats in enumerate(basin_stats_array):
+                    if year in stats and basin in stats[year]:
+                        value = stats[year][basin].get(statistic, np.nan)
+                        if not np.isnan(value):
+                            # Distance from ensemble mean (closer to 0 is better for residuals)
+                            distance_from_mean = abs(value - ensemble_mean)
+                            # Normalized distance (within 1 std = good, within 2 std = acceptable)
+                            normalized_distance = distance_from_mean / (
+                                ensemble_std + 1e-10
+                            )
+                            # Absolute value (closer to 0 is better for residuals)
+                            abs_value = abs(value)
+
+                            model_accuracy.append(
+                                {
+                                    "model_name": model_names[i],
+                                    "value": value,
+                                    "distance_from_mean": distance_from_mean,
+                                    "normalized_distance": normalized_distance,
+                                    "abs_value": abs_value,
+                                    "percentile_rank": 0,  # Will calculate below
+                                }
+                            )
+
+                # Calculate percentile ranks
+                if model_accuracy:
+                    abs_values = [m["abs_value"] for m in model_accuracy]
+                    for i, model_metric in enumerate(model_accuracy):
+                        # Rank based on absolute value (lower is better)
+                        rank = sum(
+                            1 for v in abs_values if v < model_metric["abs_value"]
+                        )
+                        percentile = (rank / len(abs_values)) * 100
+                        model_accuracy[i]["percentile_rank"] = percentile
+
+                accuracy_metrics[basin][year] = {
+                    "ensemble_mean": ensemble_mean,
+                    "ensemble_std": ensemble_std,
+                    "model_accuracy": model_accuracy,
+                    "num_models": len(values),
+                }
+
+    return accuracy_metrics
+
+
+def create_advanced_ensemble_comparison_plot(
+    basin_stats_array, model_names, basin_list=None, start_year=2007, end_year=2015
+):
+    """
+    Create an advanced interactive ensemble comparison plot with multiple dropdowns and accuracy metrics.
+
+    Parameters
+    ----------
+    basin_stats_array : list
+        List of basin statistics for each model
+    model_names : list
+        List of model names
+    basin_list : list, optional
+        List of basins to include
+    start_year : int
+        Start year for analysis
+    end_year : int
+        End year for analysis
+
+    Returns
+    -------
+    ipywidgets.VBox
+        Interactive widget with multiple controls and advanced plotting
+    """
+
+    # Available statistics
+    stats_options = [
+        ("Mean", "mean"),
+        ("Standard Deviation", "std"),
+        ("RMS", "rms"),
+        ("Sum", "sum"),
+        ("Winsorized Mean", "winsorized_mean"),
+        ("Outlier Weighted Mean", "outlier_weighted_mean"),
+    ]
+
+    # Get years and basins from data
+    if basin_stats_array:
+        first_model = basin_stats_array[0]
+        available_years = sorted([y for y in first_model.keys() if isinstance(y, int)])
+        if available_years:
+            available_basins = list(first_model[available_years[0]].keys())
+        else:
+            available_basins = []
+    else:
+        available_years = list(range(start_year, end_year + 1))
+        available_basins = basin_list or ["NW"]
+
+    # Filter by basin_list if provided
+    if basin_list:
+        available_basins = [b for b in available_basins if b in basin_list]
+
+    # Ensure we have valid years
+    if not available_years:
+        available_years = list(range(start_year, end_year + 1))
+
+    # Ensure we have valid basins
+    if not available_basins:
+        available_basins = ["NW"]
+
+    # Create widgets
+    stat_dropdown = widgets.Dropdown(
+        options=stats_options,
+        value="mean",
+        description="Statistic:",
+        style={"description_width": "80px"},
+        layout=widgets.Layout(width="200px"),
+    )
+
+    year_dropdown = widgets.IntSlider(
+        min=min(available_years),
+        max=max(available_years),
+        value=available_years[0],
+        description="Year:",
+        style={"description_width": "50px"},
+        layout=widgets.Layout(width="300px"),
+    )
+
+    basin_dropdown = widgets.Dropdown(
+        options=available_basins,
+        value=available_basins[0],
+        description="Basin:",
+        style={"description_width": "50px"},
+        layout=widgets.Layout(width="150px"),
+    )
+
+    compare_mode_dropdown = widgets.Dropdown(
+        options=[
+            ("Individual vs Ensemble Mean", "individual"),
+            ("Time Series Comparison", "timeseries"),
+            ("Accuracy Ranking", "ranking"),
+        ],
+        value="individual",
+        description="Mode:",
+        style={"description_width": "50px"},
+        layout=widgets.Layout(width="250px"),
+    )
+
+    model_select = widgets.SelectMultiple(
+        options=model_names,
+        value=[model_names[0]] if model_names else [],
+        description="Models:",
+        style={"description_width": "60px"},
+        layout=widgets.Layout(width="300px", height="120px"),
+    )
+
+    show_ensemble_stats = widgets.Checkbox(
+        value=True,
+        description="Show Ensemble Statistics",
+        style={"description_width": "initial"},
+    )
+
+    show_accuracy_metrics = widgets.Checkbox(
+        value=True,
+        description="Show Accuracy Metrics",
+        style={"description_width": "initial"},
+    )
+
+    # Create output widget
+    output = widgets.Output()
+
+    def update_plot(change=None):
+        with output:
+            output.clear_output(wait=True)
+
+            selected_stat = stat_dropdown.value
+            selected_year = year_dropdown.value
+            selected_basin = basin_dropdown.value
+            selected_models = list(model_select.value)
+            mode = compare_mode_dropdown.value
+
+            if not selected_models and mode != "ranking":
+                print("Please select at least one model to compare.")
+                return
+
+            # Calculate accuracy metrics
+            accuracy_metrics = calculate_ensemble_accuracy_metrics(
+                basin_stats_array, model_names, selected_stat
+            )
+
+            if mode == "individual":
+                fig = create_individual_vs_ensemble_plot(
+                    basin_stats_array,
+                    model_names,
+                    selected_models,
+                    selected_stat,
+                    selected_year,
+                    selected_basin,
+                    accuracy_metrics,
+                    show_ensemble_stats.value,
+                    show_accuracy_metrics.value,
+                )
+            elif mode == "timeseries":
+                fig = create_model_timeseries_comparison_plot(
+                    basin_stats_array,
+                    model_names,
+                    selected_models,
+                    selected_stat,
+                    selected_basin,
+                    available_years,
+                    accuracy_metrics,
+                    show_ensemble_stats.value,
+                )
+            elif mode == "ranking":
+                fig = create_accuracy_ranking_plot(
+                    accuracy_metrics,
+                    selected_stat,
+                    selected_year,
+                    selected_basin,
+                    model_names,
+                )
+
+            if fig:
+                fig.show()
+
+    # Initial plot
+    update_plot()
+
+    # Connect widgets
+    for widget in [
+        stat_dropdown,
+        year_dropdown,
+        basin_dropdown,
+        compare_mode_dropdown,
+        model_select,
+        show_ensemble_stats,
+        show_accuracy_metrics,
+    ]:
+        widget.observe(update_plot, names="value")
+
+    # Layout widgets
+    row1 = widgets.HBox(
+        [stat_dropdown, year_dropdown, basin_dropdown, compare_mode_dropdown]
+    )
+    row2 = widgets.HBox([show_ensemble_stats, show_accuracy_metrics])
+    row3 = widgets.HBox([model_select])
+
+    controls = widgets.VBox([row1, row2, row3])
+
+    # Add title and info
+    title = widgets.HTML("<h3>Advanced Ensemble Comparison Analysis</h3>")
+    info = widgets.HTML(
+        "<b>Tips:</b> Select models to compare against ensemble mean. "
+        "Accuracy metrics show how close each model is to zero (better for residuals). "
+        "Ranking mode shows all models sorted by performance."
+    )
+
+    return widgets.VBox([title, info, controls, output])
+
+
+def create_individual_vs_ensemble_plot(
+    basin_stats_array,
+    model_names,
+    selected_models,
+    statistic,
+    year,
+    basin,
+    accuracy_metrics,
+    show_ensemble_stats,
+    show_accuracy_metrics,
+):
+    """Create individual model vs ensemble mean comparison plot."""
+
+    fig = go.Figure()
+
+    # Get ensemble statistics for the year/basin
+    if basin in accuracy_metrics and year in accuracy_metrics[basin]:
+        ensemble_data = accuracy_metrics[basin][year]
+        ensemble_mean = ensemble_data["ensemble_mean"]
+        ensemble_std = ensemble_data["ensemble_std"]
+        model_accuracy = ensemble_data["model_accuracy"]
+
+        # Create model accuracy lookup
+        model_acc_dict = {m["model_name"]: m for m in model_accuracy}
+
+        # Plot ensemble mean line
+        if show_ensemble_stats:
+            fig.add_hline(
+                y=ensemble_mean,
+                line_dash="dash",
+                line_color="black",
+                line_width=3,
+                annotation_text=f"Ensemble Mean: {ensemble_mean:.3f}",
+                annotation_position="top left",
+            )
+
+            # Add ensemble standard deviation bands
+            fig.add_hrect(
+                y0=ensemble_mean - ensemble_std,
+                y1=ensemble_mean + ensemble_std,
+                fillcolor="lightgray",
+                opacity=0.3,
+                line_width=0,
+                annotation_text=f"±1 STD ({ensemble_std:.3f})",
+            )
+
+        # Plot selected models
+        for model_name in selected_models:
+            if model_name in model_acc_dict:
+                model_data = model_acc_dict[model_name]
+                value = model_data["value"]
+
+                # Color based on performance (closer to 0 is better)
+                abs_val = abs(value)
+                if abs_val < abs(ensemble_mean):
+                    color = "green"
+                elif model_data["normalized_distance"] < 1:
+                    color = "orange"
+                else:
+                    color = "red"
+
+                # Add bar for model
+                fig.add_trace(
+                    go.Bar(
+                        x=[model_name],
+                        y=[value],
+                        name=model_name,
+                        marker_color=color,
+                        text=f"{value:.3f}"
+                        if not show_accuracy_metrics
+                        else f"{value:.3f}<br>Rank: {model_data['percentile_rank']:.1f}%<br>Dist: {model_data['distance_from_mean']:.3f}",
+                        textposition="outside",
+                        showlegend=False,
+                    )
+                )
+
+    # Update layout
+    fig.update_layout(
+        title=f"Model Comparison - {statistic.title()} for {basin} Basin in {year}",
+        xaxis_title="Models",
+        yaxis_title=f"{statistic.title()} Value",
+        height=600,
+        showlegend=False,
+    )
+
+    # Add zero line (ideal for residuals)
+    fig.add_hline(
+        y=0,
+        line_dash="dot",
+        line_color="blue",
+        annotation_text="Ideal (Zero)",
+        annotation_position="bottom right",
+    )
+
+    return fig
+
+
+def create_model_timeseries_comparison_plot(
+    basin_stats_array,
+    model_names,
+    selected_models,
+    statistic,
+    basin,
+    years,
+    accuracy_metrics,
+    show_ensemble_stats,
+):
+    """Create time series comparison plot for selected models."""
+
+    fig = go.Figure()
+
+    # Plot ensemble mean and std bands
+    if show_ensemble_stats and basin in accuracy_metrics:
+        ensemble_means = []
+        ensemble_stds = []
+        valid_years = []
+
+        for year in years:
+            if year in accuracy_metrics[basin]:
+                ensemble_means.append(accuracy_metrics[basin][year]["ensemble_mean"])
+                ensemble_stds.append(accuracy_metrics[basin][year]["ensemble_std"])
+                valid_years.append(year)
+
+        if ensemble_means:
+            # Plot ensemble mean
+            fig.add_trace(
+                go.Scatter(
+                    x=valid_years,
+                    y=ensemble_means,
+                    mode="lines+markers",
+                    name="Ensemble Mean",
+                    line=dict(color="black", width=3, dash="dash"),
+                    marker=dict(size=8),
+                )
+            )
+
+            # Add standard deviation bands
+            upper_band = [m + s for m, s in zip(ensemble_means, ensemble_stds)]
+            lower_band = [m - s for m, s in zip(ensemble_means, ensemble_stds)]
+
+            fig.add_trace(
+                go.Scatter(
+                    x=valid_years + valid_years[::-1],
+                    y=upper_band + lower_band[::-1],
+                    fill="toself",
+                    fillcolor="rgba(128,128,128,0.2)",
+                    line=dict(color="rgba(255,255,255,0)"),
+                    name="±1 STD",
+                    showlegend=True,
+                )
+            )
+
+    # Plot selected models
+    colors = ["red", "blue", "green", "orange", "purple", "brown", "pink", "gray"]
+    for i, model_name in enumerate(selected_models):
+        model_idx = model_names.index(model_name) if model_name in model_names else -1
+        if model_idx >= 0 and model_idx < len(basin_stats_array):
+            model_stats = basin_stats_array[model_idx]
+
+            x_vals = []
+            y_vals = []
+
+            for year in years:
+                if year in model_stats and basin in model_stats[year]:
+                    value = model_stats[year][basin].get(statistic, np.nan)
+                    if not np.isnan(value):
+                        x_vals.append(year)
+                        y_vals.append(value)
+
+            if x_vals:
+                color = colors[i % len(colors)]
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_vals,
+                        y=y_vals,
+                        mode="lines+markers",
+                        name=model_name,
+                        line=dict(color=color, width=2),
+                        marker=dict(size=6),
+                    )
+                )
+
+    # Add zero line
+    fig.add_hline(
+        y=0, line_dash="dot", line_color="blue", annotation_text="Ideal (Zero)"
+    )
+
+    # Update layout
+    fig.update_layout(
+        title=f"Time Series Comparison - {statistic.title()} for {basin} Basin",
+        xaxis_title="Year",
+        yaxis_title=f"{statistic.title()} Value",
+        height=600,
+        legend=dict(x=1.05, y=1),
+    )
+
+    return fig
+
+
+def create_accuracy_ranking_plot(accuracy_metrics, statistic, year, basin, model_names):
+    """Create accuracy ranking plot for all models."""
+
+    if basin not in accuracy_metrics or year not in accuracy_metrics[basin]:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No data available for selected basin/year",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+        )
+        return fig
+
+    model_accuracy = accuracy_metrics[basin][year]["model_accuracy"]
+
+    # Sort by absolute value (best performance first)
+    sorted_models = sorted(model_accuracy, key=lambda x: x["abs_value"])
+
+    # Create bar plot
+    fig = go.Figure()
+
+    colors = []
+    for model_data in sorted_models:
+        if model_data["percentile_rank"] <= 25:  # Top quartile
+            colors.append("green")
+        elif model_data["percentile_rank"] <= 50:  # Second quartile
+            colors.append("lightgreen")
+        elif model_data["percentile_rank"] <= 75:  # Third quartile
+            colors.append("orange")
+        else:  # Bottom quartile
+            colors.append("red")
+
+    fig.add_trace(
+        go.Bar(
+            x=[m["model_name"] for m in sorted_models],
+            y=[m["value"] for m in sorted_models],
+            marker_color=colors,
+            text=[
+                f"{m['value']:.3f}<br>Rank: {m['percentile_rank']:.1f}%"
+                for m in sorted_models
+            ],
+            textposition="outside",
+            showlegend=False,
+        )
+    )
+
+    # Calculate median and mean of all model values
+    all_values = [m["value"] for m in sorted_models]
+    median_value = np.median(all_values)
+    mean_value = np.mean(all_values)
+
+    # Add zero line
+    fig.add_hline(
+        y=0, line_dash="dot", line_color="blue", annotation_text="Ideal (Zero)"
+    )
+
+    # Add median line
+    fig.add_hline(
+        y=median_value,
+        line_dash="dash",
+        line_color="purple",
+        line_width=1,
+        opacity=0.6,
+        annotation_text=f"Median: {median_value:.3f}",
+        annotation_position="top right",
+    )
+
+    # Add mean line
+    fig.add_hline(
+        y=mean_value,
+        line_dash="dashdot",
+        line_color="darkred",
+        line_width=1,
+        opacity=0.6,
+        annotation_text=f"Mean: {mean_value:.3f}",
+        annotation_position="bottom right",
+    )
+
+    # Update layout
+    fig.update_layout(
+        title=f"Model Accuracy Ranking - {statistic.title()} for {basin} Basin in {year}",
+        xaxis_title="Models (Sorted by Performance)",
+        yaxis_title=f"{statistic.title()} Value",
+        height=700,
+        xaxis_tickangle=-45,
+    )
+
+    return fig
