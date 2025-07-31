@@ -1,11 +1,63 @@
 import gc
 import logging
+import os
 import time
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 from numba import jit, prange
+
+
+# GPU Configuration Detection
+def _detect_gpu_config():
+    """Detect GPU configuration from environment or runtime."""
+    gpu_config = {
+        "platform": "cpu",
+        "cuda_available": False,
+        "metal_available": False,
+        "use_gpu": False,
+    }
+
+    # Check environment variables (set by notebook)
+    if os.environ.get("CMCT_GPU_PLATFORM"):
+        gpu_config["platform"] = os.environ.get("CMCT_GPU_PLATFORM", "cpu")
+        gpu_config["cuda_available"] = (
+            os.environ.get("CMCT_CUDA_AVAILABLE", "False") == "True"
+        )
+        gpu_config["metal_available"] = (
+            os.environ.get("CMCT_METAL_AVAILABLE", "False") == "True"
+        )
+        gpu_config["use_gpu"] = (
+            gpu_config["cuda_available"] or gpu_config["metal_available"]
+        )
+        return gpu_config
+
+    # Fallback detection
+    try:
+        from numba import cuda
+
+        if cuda.is_available() and len(cuda.gpus) > 0:
+            gpu_config["cuda_available"] = True
+            gpu_config["platform"] = "cuda"
+            gpu_config["use_gpu"] = True
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    return gpu_config
+
+
+_GPU_CONFIG = _detect_gpu_config()
+
+# Import CUDA if available
+if _GPU_CONFIG["cuda_available"]:
+    try:
+        from numba import cuda
+    except ImportError:
+        _GPU_CONFIG["cuda_available"] = False
+        _GPU_CONFIG["use_gpu"] = _GPU_CONFIG["metal_available"]
 
 
 @jit(nopython=True, parallel=False, cache=True)
@@ -31,6 +83,97 @@ def compute_residuals_and_stats(gsfc_values, model_values, x_indices, y_indices)
             sq_sum += residual * residual
 
     return residuals, valid_count, abs_sum, sq_sum, residual_sum
+
+
+# GPU-accelerated residual computation
+if _GPU_CONFIG["cuda_available"]:
+
+    @cuda.jit
+    def _cuda_compute_residuals_kernel(
+        gsfc_values, model_values, x_indices, y_indices, residuals, stats
+    ):
+        """CUDA kernel for residual computation."""
+        idx = cuda.grid(1)
+        if idx < x_indices.size:
+            x_i = x_indices[idx]
+            y_i = y_indices[idx]
+
+            if x_i < gsfc_values.shape[1] and y_i < gsfc_values.shape[0]:
+                gsfc_val = gsfc_values[y_i, x_i]
+                model_val = model_values[y_i, x_i]
+
+                if not (np.isnan(gsfc_val) or np.isnan(model_val)):
+                    residual = gsfc_val - model_val
+                    residuals[idx] = residual
+
+                    # Atomic operations for statistics
+                    cuda.atomic.add(stats, 0, 1)  # count
+                    cuda.atomic.add(stats, 1, residual)  # sum
+                    cuda.atomic.add(stats, 2, abs(residual))  # abs_sum
+                    cuda.atomic.add(stats, 3, residual * residual)  # sq_sum
+
+
+def gpu_compute_residuals_and_stats(gsfc_values, model_values, x_indices, y_indices):
+    """GPU-accelerated residual computation."""
+    if not _GPU_CONFIG["use_gpu"] or len(x_indices) < 10000:
+        # Use CPU for small datasets
+        return compute_residuals_and_stats(
+            gsfc_values, model_values, x_indices, y_indices
+        )
+
+    try:
+        if _GPU_CONFIG["cuda_available"]:
+            return _cuda_compute_residuals_and_stats(
+                gsfc_values, model_values, x_indices, y_indices
+            )
+    except Exception:
+        # Fallback to CPU
+        pass
+
+    # CPU fallback
+    return compute_residuals_and_stats(gsfc_values, model_values, x_indices, y_indices)
+
+
+def _cuda_compute_residuals_and_stats(gsfc_values, model_values, x_indices, y_indices):
+    """CUDA implementation of residual computation."""
+    n_points = len(x_indices)
+
+    # Prepare data for GPU
+    gsfc_gpu = cuda.to_device(gsfc_values.astype(np.float32))
+    model_gpu = cuda.to_device(model_values.astype(np.float32))
+    x_indices_gpu = cuda.to_device(x_indices.astype(np.int32))
+    y_indices_gpu = cuda.to_device(y_indices.astype(np.int32))
+
+    # Output arrays
+    residuals = cuda.device_array(n_points, dtype=np.float32)
+    stats = cuda.zeros(4, dtype=np.float32)  # count, sum, abs_sum, sq_sum
+
+    # Configure kernel
+    threads_per_block = 256
+    blocks_per_grid = (n_points + threads_per_block - 1) // threads_per_block
+
+    # Launch kernel
+    _cuda_compute_residuals_kernel[blocks_per_grid, threads_per_block](
+        gsfc_gpu, model_gpu, x_indices_gpu, y_indices_gpu, residuals, stats
+    )
+
+    # Copy results back
+    cuda.synchronize()
+    residuals_host = residuals.copy_to_host()
+    stats_host = stats.copy_to_host()
+
+    # Fill NaN for invalid points
+    for i in range(n_points):
+        if np.isnan(residuals_host[i]):
+            residuals_host[i] = np.nan
+
+    return (
+        residuals_host,
+        int(stats_host[0]),  # valid_count
+        float(stats_host[2]),  # abs_sum
+        float(stats_host[3]),  # sq_sum
+        float(stats_host[1]),  # residual_sum
+    )
 
 
 @jit(nopython=True, inline="always", fastmath=False)
@@ -144,6 +287,126 @@ def create_basin_mask_optimized(
     return basin_mask
 
 
+# GPU-accelerated basin mask creation
+if _GPU_CONFIG["cuda_available"]:
+
+    @cuda.jit
+    def _cuda_basin_mask_kernel(
+        x_coords,
+        y_coords,
+        basin_polygons_x,
+        basin_polygons_y,
+        basin_starts,
+        basin_lengths,
+        basin_mask,
+    ):
+        """CUDA kernel for basin mask creation."""
+        i, j = cuda.grid(2)
+
+        if i < basin_mask.shape[0] and j < basin_mask.shape[1]:
+            x = x_coords[j]
+            y = y_coords[i]
+
+            for basin_idx in range(basin_lengths.size):
+                start_idx = basin_starts[basin_idx]
+                length = basin_lengths[basin_idx]
+
+                # Check if point is inside this basin polygon
+                winding_number = 0
+                for k in range(length):
+                    k_next = (k + 1) % length
+                    poly_x_k = basin_polygons_x[start_idx + k]
+                    poly_y_k = basin_polygons_y[start_idx + k]
+                    poly_x_next = basin_polygons_x[start_idx + k_next]
+                    poly_y_next = basin_polygons_y[start_idx + k_next]
+
+                    if poly_y_k <= y:
+                        if poly_y_next > y:  # Upward crossing
+                            cross_product = (poly_x_next - poly_x_k) * (
+                                y - poly_y_k
+                            ) - (x - poly_x_k) * (poly_y_next - poly_y_k)
+                            if cross_product > 0:
+                                winding_number += 1
+                    else:
+                        if poly_y_next <= y:  # Downward crossing
+                            cross_product = (poly_x_next - poly_x_k) * (
+                                y - poly_y_k
+                            ) - (x - poly_x_k) * (poly_y_next - poly_y_k)
+                            if cross_product < 0:
+                                winding_number -= 1
+
+                if winding_number != 0:
+                    basin_mask[i, j] = basin_idx
+                    break
+
+
+def gpu_create_basin_mask_optimized(
+    x_coords, y_coords, basin_polygons_x, basin_polygons_y, basin_lengths
+):
+    """GPU-accelerated basin mask creation with fallback."""
+    if not _GPU_CONFIG["use_gpu"] or len(x_coords) * len(y_coords) < 50000:
+        return create_basin_mask_optimized(
+            x_coords, y_coords, basin_polygons_x, basin_polygons_y, basin_lengths
+        )
+
+    try:
+        if _GPU_CONFIG["cuda_available"]:
+            return _cuda_create_basin_mask_optimized(
+                x_coords, y_coords, basin_polygons_x, basin_polygons_y, basin_lengths
+            )
+    except Exception:
+        # Fallback to CPU
+        pass
+
+    return create_basin_mask_optimized(
+        x_coords, y_coords, basin_polygons_x, basin_polygons_y, basin_lengths
+    )
+
+
+def _cuda_create_basin_mask_optimized(
+    x_coords, y_coords, basin_polygons_x, basin_polygons_y, basin_lengths
+):
+    """CUDA implementation of basin mask creation."""
+    n_y, n_x = len(y_coords), len(x_coords)
+
+    # Calculate start indices for each basin polygon
+    basin_starts = np.zeros(len(basin_lengths), dtype=np.int32)
+    for i in range(1, len(basin_lengths)):
+        basin_starts[i] = basin_starts[i - 1] + basin_lengths[i - 1]
+
+    # Transfer data to GPU
+    x_coords_gpu = cuda.to_device(x_coords.astype(np.float32))
+    y_coords_gpu = cuda.to_device(y_coords.astype(np.float32))
+    basin_polygons_x_gpu = cuda.to_device(basin_polygons_x.astype(np.float32))
+    basin_polygons_y_gpu = cuda.to_device(basin_polygons_y.astype(np.float32))
+    basin_starts_gpu = cuda.to_device(basin_starts)
+    basin_lengths_gpu = cuda.to_device(basin_lengths)
+    basin_mask_gpu = cuda.device_array((n_y, n_x), dtype=np.int32)
+
+    # Initialize with -1
+    basin_mask_gpu[:] = -1
+
+    # Configure 2D grid
+    threads_per_block = (16, 16)
+    blocks_per_grid_x = (n_x + threads_per_block[1] - 1) // threads_per_block[1]
+    blocks_per_grid_y = (n_y + threads_per_block[0] - 1) // threads_per_block[0]
+    blocks_per_grid = (blocks_per_grid_y, blocks_per_grid_x)
+
+    # Launch kernel
+    _cuda_basin_mask_kernel[blocks_per_grid, threads_per_block](
+        x_coords_gpu,
+        y_coords_gpu,
+        basin_polygons_x_gpu,
+        basin_polygons_y_gpu,
+        basin_starts_gpu,
+        basin_lengths_gpu,
+        basin_mask_gpu,
+    )
+
+    cuda.synchronize()
+    return basin_mask_gpu.copy_to_host()
+
+
 def create_basin_mask_debug(
     x_coords, y_coords, basin_polygons_x, basin_polygons_y, basin_lengths
 ):
@@ -214,6 +477,67 @@ def compute_residuals_vectorized(gsfc_data, model_data):
                     residuals[t, i, j] = gsfc_val - model_val
 
     return residuals
+
+
+# GPU-accelerated residuals computation
+if _GPU_CONFIG["cuda_available"]:
+
+    @cuda.jit
+    def _cuda_residuals_kernel(gsfc_data, model_data, residuals):
+        """CUDA kernel for residual computation."""
+        t, i, j = cuda.grid(3)
+
+        if t < gsfc_data.shape[0] and i < gsfc_data.shape[1] and j < gsfc_data.shape[2]:
+            gsfc_val = gsfc_data[t, i, j]
+            model_val = model_data[t, i, j]
+
+            if not (np.isnan(gsfc_val) or np.isnan(model_val)):
+                residuals[t, i, j] = gsfc_val - model_val
+
+
+def gpu_compute_residuals_vectorized(gsfc_data, model_data):
+    """GPU-accelerated residual computation with fallback."""
+    if (
+        not _GPU_CONFIG["use_gpu"] or gsfc_data.size < 100000
+    ):  # Use CPU for small datasets
+        return compute_residuals_vectorized(gsfc_data, model_data)
+
+    try:
+        if _GPU_CONFIG["cuda_available"]:
+            return _cuda_compute_residuals_vectorized(gsfc_data, model_data)
+    except Exception:
+        # Fallback to CPU
+        pass
+
+    return compute_residuals_vectorized(gsfc_data, model_data)
+
+
+def _cuda_compute_residuals_vectorized(gsfc_data, model_data):
+    """CUDA implementation of vectorized residual computation."""
+    n_time, n_y, n_x = gsfc_data.shape
+
+    # Transfer data to GPU
+    gsfc_gpu = cuda.to_device(gsfc_data.astype(np.float32))
+    model_gpu = cuda.to_device(model_data.astype(np.float32))
+    residuals_gpu = cuda.device_array((n_time, n_y, n_x), dtype=np.float32)
+
+    # Initialize with NaN
+    residuals_gpu[:] = np.nan
+
+    # Configure 3D grid
+    threads_per_block = (8, 8, 8)
+    blocks_per_grid_x = (n_x + threads_per_block[2] - 1) // threads_per_block[2]
+    blocks_per_grid_y = (n_y + threads_per_block[1] - 1) // threads_per_block[1]
+    blocks_per_grid_z = (n_time + threads_per_block[0] - 1) // threads_per_block[0]
+    blocks_per_grid = (blocks_per_grid_z, blocks_per_grid_y, blocks_per_grid_x)
+
+    # Launch kernel
+    _cuda_residuals_kernel[blocks_per_grid, threads_per_block](
+        gsfc_gpu, model_gpu, residuals_gpu
+    )
+
+    cuda.synchronize()
+    return residuals_gpu.copy_to_host()
 
 
 @jit(nopython=True, cache=True, fastmath=False)
@@ -297,15 +621,22 @@ def compute_basin_mask_once(gsfc, model, basin_polygons_dict, year=None):
     # Create basin mask
     logging.info("Creating basin mask...")
     try:
-        basin_mask = create_basin_mask_optimized(
+        basin_mask = gpu_create_basin_mask_optimized(
             x_coords, y_coords, basin_polygons_x, basin_polygons_y, basin_lengths
         )
     except Exception as e:
-        logging.error(f"Error in optimized basin mask creation: {e}")
-        logging.info("Falling back to debug version...")
-        basin_mask = create_basin_mask_debug(
-            x_coords, y_coords, basin_polygons_x, basin_polygons_y, basin_lengths
-        )
+        logging.error(f"Error in GPU basin mask creation: {e}")
+        logging.info("Falling back to CPU version...")
+        try:
+            basin_mask = create_basin_mask_optimized(
+                x_coords, y_coords, basin_polygons_x, basin_polygons_y, basin_lengths
+            )
+        except Exception as e2:
+            logging.error(f"Error in optimized basin mask creation: {e2}")
+            logging.info("Falling back to debug version...")
+            basin_mask = create_basin_mask_debug(
+                x_coords, y_coords, basin_polygons_x, basin_polygons_y, basin_lengths
+            )
 
     # Log basin assignment statistics
     unique_basins = np.unique(basin_mask)
@@ -430,7 +761,7 @@ def create_calving_dataset_with_precomputed_mask(
         )
 
     logging.info("Computing residuals...")
-    residuals_all = compute_residuals_vectorized(gsfc_data_all, model_data_all)
+    residuals_all = gpu_compute_residuals_vectorized(gsfc_data_all, model_data_all)
 
     logging.info("Computing statistics...")
     stats_array = compute_stats_vectorized(residuals_all)

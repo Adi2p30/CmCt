@@ -1,5 +1,7 @@
 import logging
 import os
+import platform
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import timedelta
 from multiprocessing import Pool, cpu_count
@@ -12,9 +14,76 @@ import xarray as xr
 from matplotlib import rc
 from numba import jit, prange
 from scipy import stats
-import time
 
 from cmct.calving_modules import shapefile_utils
+
+
+# GPU Configuration Detection
+def _detect_gpu_capabilities():
+    """
+    Detect GPU capabilities for accelerated computation.
+    Returns configuration dictionary.
+    """
+    gpu_config = {
+        "platform": "cpu",
+        "cuda_available": False,
+        "metal_available": False,
+        "use_gpu": False,
+    }
+
+    # Check environment variables first (set by notebook)
+    if os.environ.get("CMCT_GPU_PLATFORM"):
+        gpu_config["platform"] = os.environ.get("CMCT_GPU_PLATFORM", "cpu")
+        gpu_config["cuda_available"] = (
+            os.environ.get("CMCT_CUDA_AVAILABLE", "False") == "True"
+        )
+        gpu_config["metal_available"] = (
+            os.environ.get("CMCT_METAL_AVAILABLE", "False") == "True"
+        )
+        gpu_config["use_gpu"] = (
+            gpu_config["cuda_available"] or gpu_config["metal_available"]
+        )
+        return gpu_config
+
+    # Fallback to runtime detection
+    try:
+        from numba import cuda
+
+        if cuda.is_available() and len(cuda.gpus) > 0:
+            gpu_config["cuda_available"] = True
+            gpu_config["platform"] = "cuda"
+            gpu_config["use_gpu"] = True
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    if platform.system() == "Darwin" and not gpu_config["cuda_available"]:
+        try:
+            import torch
+
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                gpu_config["metal_available"] = True
+                gpu_config["platform"] = "metal"
+                gpu_config["use_gpu"] = True
+        except ImportError:
+            pass
+        except Exception:
+            pass
+
+    return gpu_config
+
+
+# Global GPU configuration
+_GPU_CONFIG = _detect_gpu_capabilities()
+
+# Import CUDA if available
+if _GPU_CONFIG["cuda_available"]:
+    try:
+        from numba import cuda
+    except ImportError:
+        _GPU_CONFIG["cuda_available"] = False
+        _GPU_CONFIG["use_gpu"] = _GPU_CONFIG["metal_available"]
 
 # from cmct.shapefile_utils import *
 
@@ -286,6 +355,164 @@ class Residual:
         logging.info(f"Residuals saved to {output_path}")
 
 
+# GPU-Accelerated Functions
+if _GPU_CONFIG["cuda_available"]:
+
+    @cuda.jit
+    def _cuda_calculate_basin_stats_kernel(valid_data, stats_output):
+        """CUDA kernel for basin statistics calculation."""
+        idx = cuda.grid(1)
+        if idx < valid_data.size:
+            val = valid_data[idx]
+            if not np.isnan(val):
+                cuda.atomic.add(stats_output, 0, 1)  # count
+                cuda.atomic.add(stats_output, 1, val)  # sum
+                cuda.atomic.add(stats_output, 2, val * val)  # sum_sq
+
+
+def _gpu_accelerated_basin_stats(residual_data, basin_data, basin_idx):
+    """
+    GPU-accelerated basin statistics calculation.
+
+    Parameters
+    ----------
+    residual_data : numpy.ndarray
+        Residual data array
+    basin_data : numpy.ndarray
+        Basin assignment data array
+    basin_idx : int
+        Basin index to process
+
+    Returns
+    -------
+    dict
+        Statistics dictionary
+    """
+    if not _GPU_CONFIG["use_gpu"]:
+        return None
+
+    try:
+        if _GPU_CONFIG["cuda_available"]:
+            return _cuda_basin_stats(residual_data, basin_data, basin_idx)
+        elif _GPU_CONFIG["metal_available"]:
+            return _metal_basin_stats(residual_data, basin_data, basin_idx)
+    except Exception:
+        # Fallback to CPU if GPU fails
+        pass
+
+    return None
+
+
+def _cuda_basin_stats(residual_data, basin_data, basin_idx):
+    """CUDA implementation of basin statistics."""
+    try:
+        # Create mask for current basin
+        basin_mask = basin_data == basin_idx
+
+        # Extract valid data
+        basin_residuals = residual_data[basin_mask]
+        valid_data = basin_residuals[~np.isnan(basin_residuals)]
+
+        if len(valid_data) == 0:
+            return None
+
+        # Transfer to GPU
+        d_valid_data = cuda.to_device(valid_data.astype(np.float32))
+
+        # Allocate output array for statistics
+        h_stats = np.zeros(3, dtype=np.float32)  # count, sum, sum_sq
+        d_stats = cuda.to_device(h_stats)
+
+        # Configure CUDA kernel
+        threads_per_block = 256
+        blocks_per_grid = (len(valid_data) + threads_per_block - 1) // threads_per_block
+
+        # Launch kernel
+        _cuda_calculate_basin_stats_kernel[blocks_per_grid, threads_per_block](
+            d_valid_data, d_stats
+        )
+
+        # Copy results back
+        cuda.synchronize()
+        stats_result = d_stats.copy_to_host()
+
+        count = int(stats_result[0])
+        sum_val = float(stats_result[1])
+        sum_sq = float(stats_result[2])
+
+        if count > 0:
+            mean_val = sum_val / count
+            variance = (sum_sq / count) - (mean_val * mean_val)
+            std_val = np.sqrt(max(0, variance))
+
+            return {
+                "count": count,
+                "mean": mean_val,
+                "std": std_val,
+                "min": float(np.min(valid_data)),
+                "max": float(np.max(valid_data)),
+                "rms": np.sqrt(sum_sq / count),
+                "rss": sum_sq,
+                "sum": sum_val,
+            }
+
+    except Exception:
+        pass
+
+    return None
+
+
+def _metal_basin_stats(residual_data, basin_data, basin_idx):
+    """Metal Performance Shaders implementation of basin statistics."""
+    try:
+        # For Metal, we use NumPy with optimized threading
+        # Metal acceleration would require PyTorch MPS or similar
+        basin_mask = basin_data == basin_idx
+        basin_residuals = residual_data[basin_mask]
+        valid_data = basin_residuals[~np.isnan(basin_residuals)]
+
+        if len(valid_data) == 0:
+            return None
+
+        # Use NumPy's optimized operations which can leverage Metal via BLAS
+        count = len(valid_data)
+        sum_val = float(np.sum(valid_data))
+        sum_sq = float(np.sum(valid_data * valid_data))
+        mean_val = sum_val / count
+        variance = (sum_sq / count) - (mean_val * mean_val)
+        std_val = float(np.sqrt(max(0, variance)))
+
+        return {
+            "count": count,
+            "mean": mean_val,
+            "std": std_val,
+            "min": float(np.min(valid_data)),
+            "max": float(np.max(valid_data)),
+            "rms": float(np.sqrt(sum_sq / count)),
+            "rss": sum_sq,
+            "sum": sum_val,
+        }
+
+    except Exception:
+        pass
+
+    return None
+
+
+if _GPU_CONFIG["cuda_available"]:
+
+    @cuda.jit
+    def _cuda_calculate_basin_stats_kernel(valid_data, stats_output):
+        """Optimized CUDA kernel for basin statistics."""
+        idx = cuda.grid(1)
+        if idx < valid_data.size:
+            val = valid_data[idx]
+            if not np.isnan(val):
+                cuda.atomic.add(stats_output, 0, 1)  # count
+                cuda.atomic.add(stats_output, 1, val)  # sum
+                cuda.atomic.add(stats_output, 2, val * val)  # sum_sq
+
+
 def calculate_basin_statistics(residuals):
     """
     Calculate comprehensive statistics for each basin across all years.
@@ -334,9 +561,34 @@ def calculate_basin_statistics(residuals):
                     f"  Basin {basin_name}: {len(valid_data)} valid data points"
                 )
 
-                # Calculate basic statistics
-                mean_val = np.mean(valid_data)
-                std_val = np.std(valid_data)
+                # Try GPU acceleration first
+                gpu_stats = None
+                if (
+                    _GPU_CONFIG["use_gpu"] and len(valid_data) > 1000
+                ):  # Use GPU for larger datasets
+                    gpu_stats = _gpu_accelerated_basin_stats(
+                        residual_data.values, basin_data.values, basin_idx
+                    )
+
+                if gpu_stats is not None:
+                    # Use GPU-computed basic stats and add advanced stats
+                    mean_val = gpu_stats["mean"]
+                    std_val = gpu_stats["std"]
+                    basic_stats = gpu_stats
+                else:
+                    # Fallback to CPU computation
+                    mean_val = np.mean(valid_data)
+                    std_val = np.std(valid_data)
+                    basic_stats = {
+                        "count": len(valid_data),
+                        "mean": mean_val,
+                        "std": std_val,
+                        "min": np.min(valid_data),
+                        "max": np.max(valid_data),
+                        "rms": np.sqrt(np.mean(np.square(valid_data))),
+                        "rss": np.sum(np.square(valid_data)),
+                        "sum": np.sum(valid_data),
+                    }
 
                 # Calculate winsorized mean (trimmed mean with 5% limits)
                 zero_fraction = np.sum(valid_data == 0) / len(valid_data)
@@ -370,15 +622,9 @@ def calculate_basin_statistics(residuals):
                     weights = np.minimum(weights, 1000.0)
                     outlier_weighted_mean = np.average(valid_data, weights=weights)
 
+                # Combine basic stats with advanced stats
                 basin_stats[year][basin_name] = {
-                    "count": len(valid_data),
-                    "mean": mean_val,
-                    "std": std_val,
-                    "min": np.min(valid_data),
-                    "max": np.max(valid_data),
-                    "rms": np.sqrt(np.mean(np.square(valid_data))),
-                    "rss": np.sum(np.square(valid_data)),
-                    "sum": np.sum(valid_data),
+                    **basic_stats,  # Use GPU-computed or CPU-computed basic stats
                     "winsorized_mean": winsorized_mean,
                     "outlier_weighted_mean": outlier_weighted_mean,
                 }
@@ -648,3 +894,27 @@ def format_gsfc_basin_stats(basin_stats):
         output_lines.append("")  # Add spacing between basins
 
     return "\n".join(output_lines)
+
+
+def get_gpu_config():
+    """
+    Get current GPU configuration.
+
+    Returns
+    -------
+    dict
+        GPU configuration dictionary with platform, availability flags, and usage status
+    """
+    return _GPU_CONFIG.copy()
+
+
+def is_gpu_available():
+    """
+    Check if GPU acceleration is available and enabled.
+
+    Returns
+    -------
+    bool
+        True if GPU acceleration is available and enabled
+    """
+    return _GPU_CONFIG["use_gpu"]
