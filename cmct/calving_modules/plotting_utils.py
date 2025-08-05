@@ -26,7 +26,9 @@ def rotated_data_year(gsfc, year):
     return np.rot90(data, k=0)
 
 
-def create_interactive_residual_plot(residuals, year, basin_id=None):
+def create_interactive_residual_plot(
+    residuals, year, basin_id=None, preserve_zoom=False, existing_fig=None
+):
     """
     Create an interactive Plotly heatmap for residual data
 
@@ -34,6 +36,8 @@ def create_interactive_residual_plot(residuals, year, basin_id=None):
     -----------
     year : int, year to plot
     basin_id : int or None, basin ID to plot (None for all data)
+    preserve_zoom : bool, whether to preserve zoom state from existing figure
+    existing_fig : go.FigureWidget or None, existing figure to update instead of creating new one
     """
     try:
         x_coords = residuals.ds.x.values
@@ -41,23 +45,6 @@ def create_interactive_residual_plot(residuals, year, basin_id=None):
 
         # Get data for the specified basin/year
         data = residuals.get_basin_data(year, basin_id)
-
-        # Create the heatmap
-        fig = go.Figure(
-            data=go.Heatmap(
-                z=data,
-                x=x_coords,
-                y=y_coords,
-                colorscale="RdBu",  # Red-Blue colorscale, good for residuals
-                zmid=0,  # Center colorscale at 0
-                colorbar=dict(
-                    title="Ice Mask Residual",
-                    # titleside="right"
-                ),
-                hoverongaps=False,
-                hovertemplate="X: %{x:.0f}<br>Y: %{y:.0f}<br>Residual: %{z:.4f}<extra></extra>",
-            )
-        )
 
         # Set title based on basin selection
         if basin_id is not None:
@@ -68,19 +55,48 @@ def create_interactive_residual_plot(residuals, year, basin_id=None):
         else:
             title = f"Residual Ice Mask for {year} - All Basins"
 
-        fig.update_layout(
-            title=title,
-            xaxis_title="X Coordinate (m)",
-            yaxis_title="Y Coordinate (m)",
-            width=800,
-            height=600,
-            font=dict(size=12),
-        )
+        if existing_fig is not None and preserve_zoom:
+            # Update existing figure with new data while preserving zoom
+            with existing_fig.batch_update():
+                # Update the heatmap data
+                existing_fig.data[0].z = data
+                existing_fig.data[0].x = x_coords
+                existing_fig.data[0].y = y_coords
+                # Update title
+                existing_fig.layout.title.text = title
+            return existing_fig
+        else:
+            # Create new figure (or FigureWidget for interactive use)
+            FigureClass = go.FigureWidget if preserve_zoom else go.Figure
+            fig = FigureClass(
+                data=go.Heatmap(
+                    z=data,
+                    x=x_coords,
+                    y=y_coords,
+                    colorscale="RdBu",  # Red-Blue colorscale, good for residuals
+                    zmid=0,  # Center colorscale at 0
+                    colorbar=dict(
+                        title="Ice Mask Residual",
+                        # titleside="right"
+                    ),
+                    hoverongaps=False,
+                    hovertemplate="X: %{x:.0f}<br>Y: %{y:.0f}<br>Residual: %{z:.4f}<extra></extra>",
+                )
+            )
 
-        # Make sure aspect ratio is preserved
-        fig.update_yaxes(scaleanchor="x", scaleratio=1)
+            fig.update_layout(
+                title=title,
+                xaxis_title="X Coordinate (m)",
+                yaxis_title="Y Coordinate (m)",
+                width=800,
+                height=600,
+                font=dict(size=12),
+            )
 
-        return fig
+            # Make sure aspect ratio is preserved
+            fig.update_yaxes(scaleanchor="x", scaleratio=1)
+
+            return fig
 
     except Exception as e:
         print(f"Error creating plot for year {year}: {e}")
@@ -170,6 +186,126 @@ def interactive_plot(residuals, basin_stats, year, basin_id, plot_type):
             fig.show()
 
 
+def create_zoom_preserving_residual_widget(
+    residuals, basin_stats, available_years=None, available_basins=None
+):
+    """
+    Create an interactive widget for residual plots that preserves zoom when switching years
+
+    Parameters:
+    -----------
+    residuals : object with get_basin_data method and ds attribute
+    basin_stats : dict, basin statistics
+    available_years : list, optional, list of available years
+    available_basins : list, optional, list of available basins
+
+    Returns:
+    --------
+    ipywidgets.VBox : Interactive widget with zoom preservation
+    """
+    import ipywidgets as widgets
+    from IPython.display import display
+
+    # Get available years and basins from data if not provided
+    if available_years is None:
+        available_years = sorted([y for y in residuals.ds.time.values])
+    if available_basins is None:
+        available_basins = [None] + list(range(len(residuals.ds.basin_names.values)))
+
+    # Create widgets
+    year_slider = widgets.IntSlider(
+        value=available_years[0] if available_years else 2007,
+        min=min(available_years) if available_years else 2007,
+        max=max(available_years) if available_years else 2015,
+        step=1,
+        description="Year:",
+        style={"description_width": "50px"},
+        layout=widgets.Layout(width="400px"),
+    )
+
+    basin_dropdown = widgets.Dropdown(
+        options=[("All Basins", None)]
+        + [
+            (f"Basin {i}", i)
+            for i in range(len(residuals.ds.basin_names.values))
+            if i is not None
+        ],
+        value=None,
+        description="Basin:",
+        style={"description_width": "50px"},
+        layout=widgets.Layout(width="200px"),
+    )
+
+    plot_type_dropdown = widgets.Dropdown(
+        options=[("Residual Map", "residual"), ("Basin Statistics", "stats")],
+        value="residual",
+        description="Plot Type:",
+        style={"description_width": "70px"},
+        layout=widgets.Layout(width="200px"),
+    )
+
+    # Create output widget
+    output = widgets.Output()
+
+    # Store the current figure to enable zoom preservation
+    current_fig = {"fig": None, "plot_type": None}
+
+    def update_plot(change=None):
+        with output:
+            year = year_slider.value
+            basin_id = basin_dropdown.value
+            plot_type = plot_type_dropdown.value
+
+            # Check if we're switching plot types or if this is the first plot
+            switching_plot_type = current_fig["plot_type"] != plot_type
+
+            if plot_type == "residual":
+                if switching_plot_type or current_fig["fig"] is None:
+                    # Create new FigureWidget for first time or when switching plot types
+                    output.clear_output(wait=True)
+                    fig = create_interactive_residual_plot(
+                        residuals, year, basin_id, preserve_zoom=True
+                    )
+                    current_fig["fig"] = fig
+                    current_fig["plot_type"] = plot_type
+                    display(fig)
+                else:
+                    # Update existing figure while preserving zoom
+                    fig = create_interactive_residual_plot(
+                        residuals,
+                        year,
+                        basin_id,
+                        preserve_zoom=True,
+                        existing_fig=current_fig["fig"],
+                    )
+                    # No need to display again, the figure is already shown and updated in place
+
+            elif plot_type == "stats":
+                # For stats plots, we create new plots since they're bar charts
+                output.clear_output(wait=True)
+                fig = create_basin_statistics_plot(basin_stats, year)
+                current_fig["fig"] = fig
+                current_fig["plot_type"] = plot_type
+                if fig:
+                    display(fig)
+
+    # Initial plot
+    update_plot()
+
+    # Connect widgets to update function
+    year_slider.observe(update_plot, names="value")
+    basin_dropdown.observe(update_plot, names="value")
+    plot_type_dropdown.observe(update_plot, names="value")
+
+    # Create control panel
+    controls = widgets.HBox([year_slider, basin_dropdown, plot_type_dropdown])
+
+    # Add informational text
+    info_text = widgets.HTML(value="<b>Interactive Residual Plot</b><br>")
+
+    return widgets.VBox([info_text, controls, output])
+
+
 # Create the interactive widget
 
 
@@ -188,6 +324,21 @@ def create_combined_dashboard(residuals, basin_stats, year):
 
     if stats_fig:
         stats_fig.show()
+
+
+def create_example_zoom_preserving_dashboard(residuals, basin_stats):
+    """
+    Example of how to create a dashboard with zoom preservation
+
+    Usage:
+    ------
+    # Create the widget
+    widget = create_example_zoom_preserving_dashboard(residuals, basin_stats)
+
+    # Display it
+    display(widget)
+    """
+    return create_zoom_preserving_residual_widget(residuals, basin_stats)
 
 
 def create_time_series_plot(basin_stats, statistic="mean", colors=None):
@@ -639,6 +790,7 @@ def create_ensemble_time_series_plot(
     basin_list=None,
     gsfc_stats=None,
     important_models=None,
+    use_figure_widget=False,
 ):
     """
     Interactive time series plot for ensemble basin statistics with improved visual hierarchy.
@@ -653,10 +805,12 @@ def create_ensemble_time_series_plot(
     gsfc_stats : dict, optional
     important_models : list, optional
         List of 3-5 model names that should be highlighted with bolder lines
+    use_figure_widget : bool, default False
+        If True, return FigureWidget instead of Figure for interactive updates
 
     Returns
     -------
-    plotly.graph_objects.Figure
+    plotly.graph_objects.Figure or plotly.graph_objects.FigureWidget
         Interactive time series plot with improved visual hierarchy
     """
     if not basin_stats_array:
@@ -682,6 +836,10 @@ def create_ensemble_time_series_plot(
         shared_xaxes=True,
         vertical_spacing=0.04,  # Increased spacing for better readability
     )
+
+    # Convert to FigureWidget if requested
+    if use_figure_widget:
+        fig = go.FigureWidget(fig)
 
     # Define colors for different models with better contrast
     colors = [
@@ -822,6 +980,126 @@ def create_ensemble_time_series_plot(
     return fig
 
 
+def update_ensemble_time_series_plot(
+    existing_fig,
+    basin_stats_array,
+    model_names,
+    statistic="mean",
+    basin_list=None,
+    gsfc_stats=None,
+    important_models=None,
+):
+    """
+    Update an existing FigureWidget with new data while preserving zoom
+
+    Parameters
+    ----------
+    existing_fig : plotly.graph_objects.FigureWidget
+        Existing figure to update
+    basin_stats_array : list
+    model_names : list
+    statistic : str, default 'mean'
+    basin_list : list, optional
+    gsfc_stats : dict, optional
+    important_models : list, optional
+
+    Returns
+    -------
+    plotly.graph_objects.FigureWidget
+        Updated figure widget
+    """
+    if not basin_stats_array:
+        return existing_fig
+
+    # Extract years from first model
+    years = sorted(list(basin_stats_array[0].keys()))
+
+    # Get all basin names if not specified
+    if basin_list is None:
+        basin_list = list(basin_stats_array[0][years[0]].keys())
+
+    # Auto-select top 3-5 important models if not specified
+    if important_models is None:
+        important_models = model_names[: min(5, len(model_names))]
+
+    with existing_fig.batch_update():
+        # Update title
+        existing_fig.layout.title.text = (
+            f"Ensemble Time Series: {statistic.replace('_', ' ').title()} by Basin"
+        )
+
+        # Update each trace
+        trace_idx = 0
+
+        # Update model traces for each basin
+        for basin_idx, basin_name in enumerate(basin_list):
+            for model_idx, (basin_stats, model_name) in enumerate(
+                zip(basin_stats_array, model_names)
+            ):
+                values = []
+                for year in years:
+                    if year in basin_stats and basin_name in basin_stats[year]:
+                        values.append(basin_stats[year][basin_name][statistic])
+                    else:
+                        values.append(np.nan)
+
+                # Determine visual properties based on importance
+                is_important = model_name in important_models
+                line_width = 4 if is_important else 1
+                opacity = 1.0 if is_important else 0.2
+                marker_size = 8 if is_important else 5
+
+                if trace_idx < len(existing_fig.data):
+                    # Update existing trace
+                    existing_fig.data[trace_idx].x = years
+                    existing_fig.data[trace_idx].y = values
+                    existing_fig.data[trace_idx].line.width = line_width
+                    existing_fig.data[trace_idx].opacity = opacity
+                    existing_fig.data[trace_idx].marker.size = marker_size
+                    existing_fig.data[trace_idx].hovertemplate = (
+                        f"<b>{model_name}</b><br>"
+                        + f"Basin: {basin_name}<br>"
+                        + "Year: %{x}<br>"
+                        + f"{statistic.replace('_', ' ').title()}: %{{y:.6f}}<extra></extra>"
+                    )
+
+                trace_idx += 1
+
+        # Update GSFC traces if provided
+        if gsfc_stats is not None:
+            for basin_idx, basin_name in enumerate(basin_list):
+                if basin_name in gsfc_stats:
+                    gsfc_values = []
+                    for year in years:
+                        if year in gsfc_stats[basin_name]:
+                            gsfc_values.append(gsfc_stats[basin_name][year][statistic])
+                        else:
+                            gsfc_values.append(np.nan)
+
+                    if trace_idx < len(existing_fig.data):
+                        # Update existing GSFC trace
+                        existing_fig.data[trace_idx].x = years
+                        existing_fig.data[trace_idx].y = gsfc_values
+                        existing_fig.data[trace_idx].hovertemplate = (
+                            "<b>GSFC (Reference)</b><br>"
+                            + f"Basin: {basin_name}<br>"
+                            + "Year: %{x}<br>"
+                            + f"{statistic.replace('_', ' ').title()}: %{{y:.6f}}<extra></extra>"
+                        )
+
+                    trace_idx += 1
+
+        # Update y-axis labels for each subplot
+        for i in range(len(basin_list)):
+            y_axis_name = f"yaxis{i + 1 if i > 0 else ''}"
+            if hasattr(existing_fig.layout, y_axis_name):
+                getattr(existing_fig.layout, y_axis_name)["title"]["text"] = (
+                    f"{statistic.replace('_', ' ').title()}"
+                )
+
+    return existing_fig
+
+
 def create_ensemble_statistics_summary(basin_stats_array, model_names, basin_list=None):
     """
     Create summary statistics across ensemble members for each basin and year.
@@ -948,19 +1226,41 @@ def create_interactive_ensemble_plot(
     # Create output widget for plot
     output = widgets.Output()
 
+    # Store current figure to enable zoom preservation
+    current_figure = {"fig": None}
+
     def update_plot(change=None):
         with output:
-            output.clear_output(wait=True)
             current_important = list(important_models_widget.value)
-            fig = create_ensemble_time_series_plot(
-                basin_stats_array,
-                model_names,
-                statistic=stat_dropdown.value,
-                basin_list=basin_list,
-                gsfc_stats=gsfc_stats,
-                important_models=current_important,
-            )
-            fig.show()
+
+            if current_figure["fig"] is None:
+                # Create new FigureWidget for first time
+                output.clear_output(wait=True)
+                fig = create_ensemble_time_series_plot(
+                    basin_stats_array,
+                    model_names,
+                    statistic=stat_dropdown.value,
+                    basin_list=basin_list,
+                    gsfc_stats=gsfc_stats,
+                    important_models=current_important,
+                    use_figure_widget=True,  # We'll add this parameter
+                )
+                current_figure["fig"] = fig
+                from IPython.display import display
+
+                display(fig)
+            else:
+                # Update existing figure - we'll need to modify create_ensemble_time_series_plot
+                # to support updating existing FigureWidget
+                fig = update_ensemble_time_series_plot(
+                    current_figure["fig"],
+                    basin_stats_array,
+                    model_names,
+                    statistic=stat_dropdown.value,
+                    basin_list=basin_list,
+                    gsfc_stats=gsfc_stats,
+                    important_models=current_important,
+                )
 
     # Initial plot
     with output:
@@ -971,8 +1271,12 @@ def create_interactive_ensemble_plot(
             basin_list=basin_list,
             gsfc_stats=gsfc_stats,
             important_models=important_models,
+            use_figure_widget=True,
         )
-        fig.show()
+        current_figure["fig"] = fig
+        from IPython.display import display
+
+        display(fig)
 
     # Connect widgets to update function
     stat_dropdown.observe(update_plot, names="value")

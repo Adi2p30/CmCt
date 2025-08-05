@@ -9,6 +9,7 @@ from multiprocessing import Pool, cpu_count
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import netCDF4 as nc
+import numba
 import numpy as np
 import xarray as xr
 from matplotlib import rc
@@ -16,6 +17,105 @@ from numba import jit, prange
 from scipy import stats
 
 from cmct.calving_modules import shapefile_utils
+
+
+def detect_and_configure_gpu():
+    """
+    Detect available GPU compute platforms and configure accordingly.
+    Supports CUDA, Metal (Mac), and CPU fallback.
+    """
+    gpu_info = {
+        "platform": "cpu",
+        "device_name": "CPU",
+        "cuda_available": False,
+        "metal_available": False,
+        "device_count": 0,
+    }
+
+    # Check for CUDA
+    try:
+        from numba import cuda
+
+        if cuda.is_available():
+            gpu_info["cuda_available"] = True
+            gpu_info["platform"] = "cuda"
+            gpu_info["device_count"] = len(cuda.gpus)
+            if gpu_info["device_count"] > 0:
+                gpu_info["device_name"] = (
+                    f"CUDA GPU (Count: {gpu_info['device_count']})"
+                )
+                # Test CUDA functionality
+                try:
+
+                    @cuda.jit
+                    def test_cuda_kernel(arr):
+                        idx = cuda.grid(1)
+                        if idx < arr.size:
+                            arr[idx] = idx
+
+                    test_arr = cuda.device_array(10, dtype=np.float32)
+                    test_cuda_kernel[1, 10](test_arr)
+                    cuda.synchronize()
+                except Exception:
+                    gpu_info["cuda_available"] = False
+                    gpu_info["platform"] = "cpu"
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # Check for Metal (Mac GPU)
+    if platform.system() == "Darwin":  # macOS
+        try:
+            # Try to import Metal Performance Shaders
+            import subprocess
+
+            result = subprocess.run(
+                ["system_profiler", "SPDisplaysDataType"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if "Metal" in result.stdout or "GPU" in result.stdout:
+                gpu_info["metal_available"] = True
+                if not gpu_info[
+                    "cuda_available"
+                ]:  # Only use Metal if CUDA not available
+                    gpu_info["platform"] = "metal"
+                    gpu_info["device_name"] = "Metal GPU (Apple Silicon)"
+        except Exception:
+            pass
+
+        # Alternative Metal detection using PyTorch if available
+        try:
+            import torch
+
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                gpu_info["metal_available"] = True
+                if not gpu_info["cuda_available"]:
+                    gpu_info["platform"] = "metal"
+                    gpu_info["device_name"] = "Metal GPU (MPS)"
+        except ImportError:
+            pass
+        except Exception:
+            pass
+
+    # Configure Numba based on available hardware
+    if gpu_info["cuda_available"]:
+        numba.set_num_threads(2)  # Conservative thread count for CUDA
+        os.environ["NUMBA_ENABLE_CUDASIM"] = "0"
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Use first GPU
+    elif gpu_info["metal_available"]:
+        # Set environment variables for Metal optimization
+        os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+        numba.set_num_threads(4)  # More threads for Metal
+    else:
+        # Optimize for CPU
+        cpu_count = os.cpu_count()
+        optimal_threads = min(cpu_count, 8)  # Cap at 8 threads
+        numba.set_num_threads(optimal_threads)
+
+    return gpu_info
 
 
 # GPU Configuration Detection
