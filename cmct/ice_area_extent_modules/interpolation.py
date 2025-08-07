@@ -165,15 +165,15 @@ def trim_to_align_shapes(model_ds, target_ds, x_dim="x", y_dim="y"):
         logging.error(f"Error during trimming: {e}")
         return model_ds, alignment_info
 
-def need_for_interpolation(gsfc, model):
+def need_for_interpolation(observations, model):
     """
     Check if interpolation is needed between model and observation data.
 
     Parameters
     ----------
-    gsfc : GSFCcalving
+    observations : observationsice_area_extent
         Observation data object
-    model : Modelcalving
+    model : Modelice_area_extent
         Model data object
 
     Returns
@@ -186,9 +186,9 @@ def need_for_interpolation(gsfc, model):
         - 'reason': str
     """
     model_x, model_y = model.ds.x.values, model.ds.y.values
-    gsfc_x, gsfc_y = gsfc.ds.x.values, gsfc.ds.y.values
+    observations_x, observations_y = observations.ds.x.values, observations.ds.y.values
 
-    if np.array_equal(model_x, gsfc_x) and np.array_equal(model_y, gsfc_y):
+    if np.array_equal(model_x, observations_x) and np.array_equal(model_y, observations_y):
         return {
             "needs_processing": False,
             "can_trim": False,
@@ -196,8 +196,8 @@ def need_for_interpolation(gsfc, model):
             "reason": "Coordinates are identical",
         }
 
-    x_alignment = detect_coordinate_alignment(model_x, gsfc_x)
-    y_alignment = detect_coordinate_alignment(model_y, gsfc_y)
+    x_alignment = detect_coordinate_alignment(model_x, observations_x)
+    y_alignment = detect_coordinate_alignment(model_y, observations_y)
 
     if x_alignment["can_align"] and y_alignment["can_align"]:
         return {
@@ -209,10 +209,10 @@ def need_for_interpolation(gsfc, model):
             "y_offset": y_alignment["offset"],
         }
 
-    if model_x.size != gsfc_x.size or model_y.size != gsfc_y.size:
+    if model_x.size != observations_x.size or model_y.size != observations_y.size:
         logging.warning(
-            f"Model x size: {model_x.size}, GSFC x size: {gsfc_x.size}, "
-            f"Model y size: {model_y.size}, GSFC y size: {gsfc_y.size}. "
+            f"Model x size: {model_x.size}, observations x size: {observations_x.size}, "
+            f"Model y size: {model_y.size}, observations y size: {observations_y.size}. "
             "Interpolation needed."
         )
         return {
@@ -225,10 +225,10 @@ def need_for_interpolation(gsfc, model):
     # Check if spacing is different
     model_dx = model_x[1] - model_x[0] if len(model_x) > 1 else 0
     model_dy = model_y[1] - model_y[0] if len(model_y) > 1 else 0
-    gsfc_dx = gsfc_x[1] - gsfc_x[0] if len(gsfc_x) > 1 else 0
-    gsfc_dy = gsfc_y[1] - gsfc_y[0] if len(gsfc_y) > 1 else 0
+    observations_dx = observations_x[1] - observations_x[0] if len(observations_x) > 1 else 0
+    observations_dy = observations_y[1] - observations_y[0] if len(observations_y) > 1 else 0
 
-    if not np.allclose(model_dx, gsfc_dx) or not np.allclose(model_dy, gsfc_dy):
+    if not np.allclose(model_dx, observations_dx) or not np.allclose(model_dy, observations_dy):
         return {
             "needs_processing": True,
             "can_trim": False,

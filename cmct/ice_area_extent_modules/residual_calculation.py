@@ -61,7 +61,7 @@ if _GPU_CONFIG["cuda_available"]:
 
 
 @jit(nopython=True, parallel=False, cache=True)
-def compute_residuals_and_stats(gsfc_values, model_values, x_indices, y_indices):
+def compute_residuals_and_stats(observations_values, model_values, x_indices, y_indices):
     n_points = len(x_indices)
     residuals = np.full(n_points, np.nan, dtype=np.float32)
 
@@ -71,11 +71,11 @@ def compute_residuals_and_stats(gsfc_values, model_values, x_indices, y_indices)
     residual_sum = 0.0
 
     for i in prange(n_points):
-        gsfc_val = gsfc_values[y_indices[i], x_indices[i]]
+        observations_val = observations_values[y_indices[i], x_indices[i]]
         model_val = model_values[y_indices[i], x_indices[i]]
 
-        if not (np.isnan(gsfc_val) or np.isnan(model_val)):
-            residual = gsfc_val - model_val
+        if not (np.isnan(observations_val) or np.isnan(model_val)):
+            residual = observations_val - model_val
             residuals[i] = residual
             valid_count += 1
             residual_sum += residual
@@ -90,7 +90,7 @@ if _GPU_CONFIG["cuda_available"]:
 
     @cuda.jit
     def _cuda_compute_residuals_kernel(
-        gsfc_values, model_values, x_indices, y_indices, residuals, stats
+        observations_values, model_values, x_indices, y_indices, residuals, stats
     ):
         """CUDA kernel for residual computation."""
         idx = cuda.grid(1)
@@ -98,12 +98,12 @@ if _GPU_CONFIG["cuda_available"]:
             x_i = x_indices[idx]
             y_i = y_indices[idx]
 
-            if x_i < gsfc_values.shape[1] and y_i < gsfc_values.shape[0]:
-                gsfc_val = gsfc_values[y_i, x_i]
+            if x_i < observations_values.shape[1] and y_i < observations_values.shape[0]:
+                observations_val = observations_values[y_i, x_i]
                 model_val = model_values[y_i, x_i]
 
-                if not (np.isnan(gsfc_val) or np.isnan(model_val)):
-                    residual = gsfc_val - model_val
+                if not (np.isnan(observations_val) or np.isnan(model_val)):
+                    residual = observations_val - model_val
                     residuals[idx] = residual
 
                     # Atomic operations for statistics
@@ -113,33 +113,33 @@ if _GPU_CONFIG["cuda_available"]:
                     cuda.atomic.add(stats, 3, residual * residual)  # sq_sum
 
 
-def gpu_compute_residuals_and_stats(gsfc_values, model_values, x_indices, y_indices):
+def gpu_compute_residuals_and_stats(observations_values, model_values, x_indices, y_indices):
     """GPU-accelerated residual computation."""
     if not _GPU_CONFIG["use_gpu"] or len(x_indices) < 10000:
         # Use CPU for small datasets
         return compute_residuals_and_stats(
-            gsfc_values, model_values, x_indices, y_indices
+            observations_values, model_values, x_indices, y_indices
         )
 
     try:
         if _GPU_CONFIG["cuda_available"]:
             return _cuda_compute_residuals_and_stats(
-                gsfc_values, model_values, x_indices, y_indices
+                observations_values, model_values, x_indices, y_indices
             )
     except Exception:
         # Fallback to CPU
         pass
 
     # CPU fallback
-    return compute_residuals_and_stats(gsfc_values, model_values, x_indices, y_indices)
+    return compute_residuals_and_stats(observations_values, model_values, x_indices, y_indices)
 
 
-def _cuda_compute_residuals_and_stats(gsfc_values, model_values, x_indices, y_indices):
+def _cuda_compute_residuals_and_stats(observations_values, model_values, x_indices, y_indices):
     """CUDA implementation of residual computation."""
     n_points = len(x_indices)
 
     # Prepare data for GPU
-    gsfc_gpu = cuda.to_device(gsfc_values.astype(np.float32))
+    observations_gpu = cuda.to_device(observations_values.astype(np.float32))
     model_gpu = cuda.to_device(model_values.astype(np.float32))
     x_indices_gpu = cuda.to_device(x_indices.astype(np.int32))
     y_indices_gpu = cuda.to_device(y_indices.astype(np.int32))
@@ -154,7 +154,7 @@ def _cuda_compute_residuals_and_stats(gsfc_values, model_values, x_indices, y_in
 
     # Launch kernel
     _cuda_compute_residuals_kernel[blocks_per_grid, threads_per_block](
-        gsfc_gpu, model_gpu, x_indices_gpu, y_indices_gpu, residuals, stats
+        observations_gpu, model_gpu, x_indices_gpu, y_indices_gpu, residuals, stats
     )
 
     # Copy results back
@@ -462,19 +462,19 @@ def create_basin_mask_debug(
 
 
 @jit(nopython=True, parallel=False, cache=True, fastmath=False)
-def compute_residuals_vectorized(gsfc_data, model_data):
+def compute_residuals_vectorized(observations_data, model_data):
     """Compute residuals in a vectorized manner."""
-    n_time, n_y, n_x = gsfc_data.shape
+    n_time, n_y, n_x = observations_data.shape
     residuals = np.full((n_time, n_y, n_x), np.nan, dtype=np.float32)
 
     for t in prange(n_time):
         for i in prange(n_y):
             for j in prange(n_x):
-                gsfc_val = gsfc_data[t, i, j]
+                observations_val = observations_data[t, i, j]
                 model_val = model_data[t, i, j]
 
-                if not (np.isnan(gsfc_val) or np.isnan(model_val)):
-                    residuals[t, i, j] = gsfc_val - model_val
+                if not (np.isnan(observations_val) or np.isnan(model_val)):
+                    residuals[t, i, j] = observations_val - model_val
 
     return residuals
 
@@ -483,41 +483,41 @@ def compute_residuals_vectorized(gsfc_data, model_data):
 if _GPU_CONFIG["cuda_available"]:
 
     @cuda.jit
-    def _cuda_residuals_kernel(gsfc_data, model_data, residuals):
+    def _cuda_residuals_kernel(observations_data, model_data, residuals):
         """CUDA kernel for residual computation."""
         t, i, j = cuda.grid(3)
 
-        if t < gsfc_data.shape[0] and i < gsfc_data.shape[1] and j < gsfc_data.shape[2]:
-            gsfc_val = gsfc_data[t, i, j]
+        if t < observations_data.shape[0] and i < observations_data.shape[1] and j < observations_data.shape[2]:
+            observations_val = observations_data[t, i, j]
             model_val = model_data[t, i, j]
 
-            if not (np.isnan(gsfc_val) or np.isnan(model_val)):
-                residuals[t, i, j] = gsfc_val - model_val
+            if not (np.isnan(observations_val) or np.isnan(model_val)):
+                residuals[t, i, j] = observations_val - model_val
 
 
-def gpu_compute_residuals_vectorized(gsfc_data, model_data):
+def gpu_compute_residuals_vectorized(observations_data, model_data):
     """GPU-accelerated residual computation with fallback."""
     if (
-        not _GPU_CONFIG["use_gpu"] or gsfc_data.size < 100000
+        not _GPU_CONFIG["use_gpu"] or observations_data.size < 100000
     ):  # Use CPU for small datasets
-        return compute_residuals_vectorized(gsfc_data, model_data)
+        return compute_residuals_vectorized(observations_data, model_data)
 
     try:
         if _GPU_CONFIG["cuda_available"]:
-            return _cuda_compute_residuals_vectorized(gsfc_data, model_data)
+            return _cuda_compute_residuals_vectorized(observations_data, model_data)
     except Exception:
         # Fallback to CPU
         pass
 
-    return compute_residuals_vectorized(gsfc_data, model_data)
+    return compute_residuals_vectorized(observations_data, model_data)
 
 
-def _cuda_compute_residuals_vectorized(gsfc_data, model_data):
+def _cuda_compute_residuals_vectorized(observations_data, model_data):
     """CUDA implementation of vectorized residual computation."""
-    n_time, n_y, n_x = gsfc_data.shape
+    n_time, n_y, n_x = observations_data.shape
 
     # Transfer data to GPU
-    gsfc_gpu = cuda.to_device(gsfc_data.astype(np.float32))
+    observations_gpu = cuda.to_device(observations_data.astype(np.float32))
     model_gpu = cuda.to_device(model_data.astype(np.float32))
     residuals_gpu = cuda.device_array((n_time, n_y, n_x), dtype=np.float32)
 
@@ -533,7 +533,7 @@ def _cuda_compute_residuals_vectorized(gsfc_data, model_data):
 
     # Launch kernel
     _cuda_residuals_kernel[blocks_per_grid, threads_per_block](
-        gsfc_gpu, model_gpu, residuals_gpu
+        observations_gpu, model_gpu, residuals_gpu
     )
 
     cuda.synchronize()
@@ -580,16 +580,16 @@ def compute_stats_vectorized(residuals):
     return stats
 
 
-def compute_basin_mask_once(gsfc, model, basin_polygons_dict, year=None):
+def compute_basin_mask_once(observations, model, basin_polygons_dict, year=None):
     """
     Compute basin mask once using the first available year of data.
 
     Parameters
     ----------
-    gsfc : GSFCcalving
-        GSFC calving data object
-    model : ModelCalving
-        Model calving data object (first ensemble member)
+    observations : observationsice_area_extent
+        observations ice_area_extent data object
+    model : Modelice_area_extent
+        Model ice_area_extent data object (first ensemble member)
     basin_polygons_dict : dict
         Dictionary of basin polygons
     year : int, optional
@@ -663,18 +663,18 @@ def compute_basin_mask_once(gsfc, model, basin_polygons_dict, year=None):
     return basin_mask, basin_names, x_coords, y_coords
 
 
-def create_calving_dataset_with_precomputed_mask(
-    gsfc, model, years, basin_mask, basin_names, x_coords, y_coords
+def create_ice_area_extent_dataset_with_precomputed_mask(
+    observations, model, years, basin_mask, basin_names, x_coords, y_coords
 ):
     """
-    Create a comprehensive dataset with calving data using a precomputed basin mask.
+    Create a comprehensive dataset with ice_area_extent data using a precomputed basin mask.
 
     Parameters
     ----------
-    gsfc : GSFCcalving
-        GSFC calving data object
-    model : ModelCalving
-        Model calving data object
+    observations : observationsice_area_extent
+        observations ice_area_extent data object
+    model : Modelice_area_extent
+        Model ice_area_extent data object
     years : list
         List of years to process
     basin_mask : np.ndarray
@@ -692,26 +692,26 @@ def create_calving_dataset_with_precomputed_mask(
         Dataset with dimensions (time, y, x) and variables for residuals,
         basin assignments, and ice masks
     """
-    logging.info("Creating calving dataset with precomputed basin mask...")
+    logging.info("Creating ice_area_extent dataset with precomputed basin mask...")
     start_time = time.time()
 
-    # Prepare GSFC data for all years
-    gsfc_data_list = []
+    # Prepare observations data for all years
+    observations_data_list = []
     for year in years:
-        gsfc_year = gsfc.ds.sel(year=year)
+        observations_year = observations.ds.sel(year=year)
 
         # Use xarray's interpolation to ensure exact coordinate matching
-        # Interpolate GSFC data to the exact coordinates used for the basin mask
-        gsfc_interp = gsfc_year.ice_mask.interp(x=x_coords, y=y_coords, method="linear")
-        gsfc_aligned = gsfc_interp.values.astype(np.float32)
+        # Interpolate observations data to the exact coordinates used for the basin mask
+        observations_interp = observations_year.ice_mask.interp(x=x_coords, y=y_coords, method="linear")
+        observations_aligned = observations_interp.values.astype(np.float32)
 
         # Handle any NaN values that might result from interpolation
-        gsfc_aligned = np.nan_to_num(gsfc_aligned, nan=0.0)
+        observations_aligned = np.nan_to_num(observations_aligned, nan=0.0)
 
-        gsfc_data_list.append(gsfc_aligned)
+        observations_data_list.append(observations_aligned)
 
-    gsfc_data_all = np.stack(gsfc_data_list, axis=0)
-    logging.info(f"GSFC data shape: {gsfc_data_all.shape}")
+    observations_data_all = np.stack(observations_data_list, axis=0)
+    logging.info(f"observations data shape: {observations_data_all.shape}")
 
     # Prepare model data for all years
     model_data_list = []
@@ -732,10 +732,10 @@ def create_calving_dataset_with_precomputed_mask(
 
     model_data_all = np.stack(model_data_list, axis=0)
 
-    # Check if model data needs to be transposed to match GSFC data dimension order
-    if model_data_all.shape != gsfc_data_all.shape:
+    # Check if model data needs to be transposed to match observations data dimension order
+    if model_data_all.shape != observations_data_all.shape:
         logging.info(
-            f"Transposing model data from {model_data_all.shape} to match GSFC shape {gsfc_data_all.shape}"
+            f"Transposing model data from {model_data_all.shape} to match observations shape {observations_data_all.shape}"
         )
         # Transpose the spatial dimensions (keep time dimension as first)
         model_data_all = model_data_all.transpose(0, 2, 1)
@@ -744,24 +744,24 @@ def create_calving_dataset_with_precomputed_mask(
     logging.info(f"Basin mask shape: {basin_mask.shape}")
 
     # Ensure all data arrays have consistent shapes
-    if gsfc_data_all.shape != model_data_all.shape:
+    if observations_data_all.shape != model_data_all.shape:
         logging.error(
-            f"Shape mismatch after transpose: GSFC {gsfc_data_all.shape} vs Model {model_data_all.shape}"
+            f"Shape mismatch after transpose: observations {observations_data_all.shape} vs Model {model_data_all.shape}"
         )
         raise ValueError(
-            f"Data shape mismatch after transpose: GSFC {gsfc_data_all.shape} vs Model {model_data_all.shape}"
+            f"Data shape mismatch after transpose: observations {observations_data_all.shape} vs Model {model_data_all.shape}"
         )
 
-    if gsfc_data_all.shape[1:] != basin_mask.shape:
+    if observations_data_all.shape[1:] != basin_mask.shape:
         logging.error(
-            f"Basin mask shape mismatch: Data {gsfc_data_all.shape[1:]} vs Mask {basin_mask.shape}"
+            f"Basin mask shape mismatch: Data {observations_data_all.shape[1:]} vs Mask {basin_mask.shape}"
         )
         raise ValueError(
-            f"Basin mask shape mismatch: Data {gsfc_data_all.shape[1:]} vs Mask {basin_mask.shape}"
+            f"Basin mask shape mismatch: Data {observations_data_all.shape[1:]} vs Mask {basin_mask.shape}"
         )
 
     logging.info("Computing residuals...")
-    residuals_all = gpu_compute_residuals_vectorized(gsfc_data_all, model_data_all)
+    residuals_all = gpu_compute_residuals_vectorized(observations_data_all, model_data_all)
 
     logging.info("Computing statistics...")
     stats_array = compute_stats_vectorized(residuals_all)
@@ -802,7 +802,7 @@ def create_calving_dataset_with_precomputed_mask(
         {
             "residual": (["time", "y", "x"], residuals_all),
             "basin": (["time", "y", "x"], basins_all),
-            "gsfc_ice_mask": (["time", "y", "x"], gsfc_data_all),
+            "observations_ice_mask": (["time", "y", "x"], observations_data_all),
             "model_ice_mask": (["time", "y", "x"], model_data_all),
         },
         coords={
@@ -812,7 +812,7 @@ def create_calving_dataset_with_precomputed_mask(
             "basin_names": ("basin_id", basin_names),
         },
         attrs={
-            "title": "Calving comparison analysis",
+            "title": "ice_area_extent comparison analysis",
             "projection": "EPSG:3413",
             "units": "ice_mask units",
             "creation_date": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -832,18 +832,18 @@ def create_calving_dataset_with_precomputed_mask(
 
 
 # Backward compatibility function - kept for legacy code
-def create_calving_dataset(gsfc, model, years, basin_polygons_dict):
+def create_ice_area_extent_dataset(observations, model, years, basin_polygons_dict):
     """
     Legacy function that computes basin mask and creates dataset.
     For new code, use compute_basin_mask_once() followed by
-    create_calving_dataset_with_precomputed_mask().
+    create_ice_area_extent_dataset_with_precomputed_mask().
     """
     # Compute basin mask
     basin_mask, basin_names, x_coords, y_coords = compute_basin_mask_once(
-        gsfc, model, basin_polygons_dict, years[0]
+        observations, model, basin_polygons_dict, years[0]
     )
 
     # Create dataset with precomputed mask
-    return create_calving_dataset_with_precomputed_mask(
-        gsfc, model, years, basin_mask, basin_names, x_coords, y_coords
+    return create_ice_area_extent_dataset_with_precomputed_mask(
+        observations, model, years, basin_mask, basin_names, x_coords, y_coords
     )

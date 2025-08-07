@@ -40,8 +40,8 @@ def days_in_year(date):
     return diy
 
 
-def checking_calving_daterange(
-    gsfc_time: list, model_time: list, start_date: int, end_date: int
+def checking_ice_area_extent_daterange(
+    observations_time: list, model_time: list, start_date: int, end_date: int
 ):
     """
     Check if the requested date range is available in both datasets.
@@ -49,8 +49,8 @@ def checking_calving_daterange(
 
     Parameters
     ----------
-    gsfc_time : list or array
-        Time values from GSFC dataset
+    observations_time : list or array
+        Time values from observations dataset
     model_time : list or array
         Time values from model dataset
     start_date : int
@@ -105,27 +105,27 @@ def checking_calving_daterange(
 
     # Convert time arrays to years
     try:
-        gsfc_years = [extract_year(t) for t in gsfc_time]
+        observations_years = [extract_year(t) for t in observations_time]
         model_years = [extract_year(t) for t in model_time]
     except Exception as e:
         print(f"Error processing time values: {e}")
-        print(f"GSFC time sample: {gsfc_time[:3] if len(gsfc_time) > 3 else gsfc_time}")
+        print(f"observations time sample: {observations_time[:3] if len(observations_time) > 3 else observations_time}")
         print(
             f"Model time sample: {model_time[:3] if len(model_time) > 3 else model_time}"
         )
         raise
 
     # Sort and get min/max years
-    gsfc_years.sort()
-    gsfc_time_min = gsfc_years[0]
-    gsfc_time_max = gsfc_years[-1]
+    observations_years.sort()
+    observations_time_min = observations_years[0]
+    observations_time_max = observations_years[-1]
 
     model_years.sort()
     model_time_min = model_years[0]
     model_time_max = model_years[-1]
 
-    minimum_time = max(gsfc_time_min, model_time_min)
-    maximum_time = min(gsfc_time_max, model_time_max)
+    minimum_time = max(observations_time_min, model_time_min)
+    maximum_time = min(observations_time_max, model_time_max)
 
     if not (minimum_time <= start_date <= end_date <= maximum_time):
         raise ValueError(
@@ -137,22 +137,22 @@ def checking_calving_daterange(
         )
 
 
-def standardising_time_var(gsfc_time):
+def standardising_time_var(observations_time):
     """
     Standardize time variables to a common format (list of years as floats).
     Handles cftime, datetime, numpy datetime64, pandas datetime, and other formats.
 
     Parameters
     ----------
-    gsfc_time : list, array, or time series
-        Time values from GSFC dataset
+    observations_time : list, array, or time series
+        Time values from observations dataset
     model_time : list, array, or time series
         Time values from model dataset
 
     Returns
     -------
     tuple of lists
-        Standardized GSFC and model time as lists of float years.
+        Standardized observations and model time as lists of float years.
     """
     from datetime import datetime
 
@@ -246,6 +246,6 @@ def standardising_time_var(gsfc_time):
         return years
 
     # Process both time arrays
-    years = to_year_list(gsfc_time)
+    years = to_year_list(observations_time)
 
     return years

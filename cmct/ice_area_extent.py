@@ -16,7 +16,7 @@ from matplotlib import rc
 from numba import jit, prange
 from scipy import stats
 
-from cmct.calving_modules import shapefile_utils
+from cmct.ice_area_extent_modules import shapefile_utils
 
 
 def detect_and_configure_gpu():
@@ -255,24 +255,24 @@ def load_basins(basin_filename, basins):
     return basin_polygons, selected_basins
 
 
-def load_gsfc_calving(filepath, basins=None):
+def load_observations_ice_area_extent(filepath, basins=None):
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"File not found: {filepath}")
     try:
-        gsfc = GSFCcalving(filepath, basins)
+        observations = observationsice_area_extent(filepath, basins)
 
     except Exception as error:
-        print("Error: Failed to load GSFC dataset.")
+        print("Error: Failed to load observations dataset.")
         print(error)
-        gsfc = None
-        raise ValueError("Failed to load GSFC calving data.")
+        observations = None
+        raise ValueError("Failed to load observations ice_area_extent data.")
 
-    return gsfc
+    return observations
 
 
-def load_model_calving(filepath):
+def load_model_ice_area_extent(filepath):
     try:
-        model_res = Modelcalving(filepath)
+        model_res = Modelice_area_extent(filepath)
     except Exception as error:
         logging.error("Error: Failed to load Model dataset.")
         logging.error(error)
@@ -297,7 +297,7 @@ def load_residuals(residuals):
         return Residual(residuals)
 
 
-class GSFCcalving:
+class observationsice_area_extent:
     def __init__(self, nc_path, basins=None):
         # Open as xarray Dataset
 
@@ -336,7 +336,7 @@ class GSFCcalving:
     #     return np.datetime64('2002-01-01T00:00:00') + np.array([int(d*24) for d in days], dtype='timedelta64[h]')
 
 
-class Modelcalving:
+class Modelice_area_extent:
     def __init__(self, nc_path):
         # Open as xarray Dataset
         self.ds = xr.open_dataset(
@@ -382,7 +382,7 @@ class Modelcalving:
         self.ds.close()
 
     def print_info(self):
-        print("GSFC Calving Data:")
+        print("observations ice_area_extent Data:")
         print(f"Latitude: {self.lat.values}")
         print(f"Longitude: {self.lon.values}")
         print(f"Time: {self.time.values}")
@@ -787,14 +787,14 @@ def format_basin_stats(basin_stats):
     #         )
 
 
-def calculate_gsfc_statistics(gsfc, basin_polygons_dict):
+def calculate_observations_statistics(observations, basin_polygons_dict):
     """
-    Calculate comprehensive statistics for each basin across all years for GSFC data.
+    Calculate comprehensive statistics for each basin across all years for observations data.
 
     Parameters
     ----------
-    gsfc : GSFCcalving
-        GSFC calving object containing the dataset with ice mask values
+    observations : observationsice_area_extent
+        observations ice_area_extent object containing the dataset with ice mask values
     basin_polygons_dict : dict
         Dictionary containing basin polygons for spatial assignment
 
@@ -807,24 +807,24 @@ def calculate_gsfc_statistics(gsfc, basin_polygons_dict):
     """
 
     logger = logging.getLogger(__name__)
-    logger.info("Starting GSFC basin statistics calculation")
+    logger.info("Starting observations basin statistics calculation")
 
     # Import the required modules for basin assignment
-    from cmct.calving_modules.residual_calculation import (
+    from cmct.ice_area_extent_modules.residual_calculation import (
         # create_basin_mask_debug,
         create_basin_mask_optimized,
         prepare_basin_polygons,
     )
 
-    # Get times from GSFC data
-    times = gsfc.time.values
+    # Get times from observations data
+    times = observations.time.values
     logger.info(f"Processing {len(times)} time steps")
 
-    # Get coordinate arrays from GSFC data
-    x_coords = gsfc.x.values.astype(np.float32)
-    y_coords = gsfc.y.values.astype(np.float32)
+    # Get coordinate arrays from observations data
+    x_coords = observations.x.values.astype(np.float32)
+    y_coords = observations.y.values.astype(np.float32)
 
-    logger.info(f"GSFC grid dimensions: {len(y_coords)} x {len(x_coords)}")
+    logger.info(f"observations grid dimensions: {len(y_coords)} x {len(x_coords)}")
 
     # Prepare basin data for assignment
     basin_names, basin_polygons_x, basin_polygons_y, basin_lengths = (
@@ -833,8 +833,8 @@ def calculate_gsfc_statistics(gsfc, basin_polygons_dict):
 
     logger.info(f"Found {len(basin_names)} basins: {basin_names}")
 
-    # Create basin mask for GSFC coordinates
-    logger.info("Creating basin assignments for GSFC coordinates...")
+    # Create basin mask for observations coordinates
+    logger.info("Creating basin assignments for observations coordinates...")
 
     basin_mask = create_basin_mask_optimized(
         x_coords, y_coords, basin_polygons_x, basin_polygons_y, basin_lengths
@@ -863,7 +863,7 @@ def calculate_gsfc_statistics(gsfc, basin_polygons_dict):
     # Process each time step
     for time_idx, year in enumerate(times):
         logger.debug(f"Processing year {year} (time index {time_idx})")
-        ice_mask_data = gsfc.ds.ice_mask.isel(year=time_idx).values
+        ice_mask_data = observations.ds.ice_mask.isel(year=time_idx).values
 
         # Process each basin
         for basin_idx, basin_name in enumerate(basin_names):
@@ -943,18 +943,18 @@ def calculate_gsfc_statistics(gsfc, basin_polygons_dict):
                     "outlier_weighted_mean": np.nan,
                 }
 
-    logger.info("GSFC basin statistics calculation completed")
+    logger.info("observations basin statistics calculation completed")
     return basin_stats
 
 
-def format_gsfc_basin_stats(basin_stats):
+def format_observations_basin_stats(basin_stats):
     """
-    Format GSFC basin statistics in a readable format.
+    Format observations basin statistics in a readable format.
 
     Parameters
     ----------
     basin_stats : dict
-        Dictionary containing GSFC basin statistics with structure:
+        Dictionary containing observations basin statistics with structure:
         {basin_name: {year: {stat_name: value}}}
 
     Returns
@@ -963,7 +963,7 @@ def format_gsfc_basin_stats(basin_stats):
         Formatted string with basin statistics organized by basin and year.
     """
     output_lines = []
-    output_lines.append("=== GSFC Basin Statistics ===\n")
+    output_lines.append("=== observations Basin Statistics ===\n")
 
     for basin_name, yearly_stats in basin_stats.items():
         if not yearly_stats:  # Skip basins with no data
