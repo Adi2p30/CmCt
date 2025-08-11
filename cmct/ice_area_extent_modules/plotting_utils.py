@@ -46,7 +46,6 @@ def create_interactive_residual_plot(
         # Get data for the specified basin/year
         data = residuals.get_basin_data(year, basin_id)
 
-        # Set title based on basin selection
         if basin_id is not None:
             basin_name = residuals.ds.basin_names.values[basin_id]
             title = (
@@ -56,7 +55,6 @@ def create_interactive_residual_plot(
             title = f"Residual Ice Mask for {year} - All Basins"
 
         if existing_fig is not None and preserve_zoom:
-            # Update existing figure with new data while preserving zoom
             with existing_fig.batch_update():
                 # Update the heatmap data
                 existing_fig.data[0].z = data
@@ -66,7 +64,6 @@ def create_interactive_residual_plot(
                 existing_fig.layout.title.text = title
             return existing_fig
         else:
-            # Create new figure (or FigureWidget for interactive use)
             FigureClass = go.FigureWidget if preserve_zoom else go.Figure
             fig = FigureClass(
                 data=go.Heatmap(
@@ -74,10 +71,9 @@ def create_interactive_residual_plot(
                     x=x_coords,
                     y=y_coords,
                     colorscale="RdBu",  # Red-Blue colorscale, good for residuals
-                    zmid=0,  # Center colorscale at 0
+                    zmid=0,
                     colorbar=dict(
                         title="Ice Mask Residual",
-                        # titleside="right"
                     ),
                     hoverongaps=False,
                     hovertemplate="X: %{x:.0f}<br>Y: %{y:.0f}<br>Residual: %{z:.4f}<extra></extra>",
@@ -93,7 +89,6 @@ def create_interactive_residual_plot(
                 font=dict(size=12),
             )
 
-            # Make sure aspect ratio is preserved
             fig.update_yaxes(scaleanchor="x", scaleratio=1)
 
             return fig
@@ -112,7 +107,6 @@ def create_basin_statistics_plot(basin_stats, year):
         print(f"No data for year {year}")
         return None
 
-    # Prepare data for plotting
     basins = []
     means = []
     stds = []
@@ -127,7 +121,6 @@ def create_basin_statistics_plot(basin_stats, year):
             counts.append(stats["count"])
             rms_values.append(stats["rms"])
 
-    # Create subplots
     fig = make_subplots(
         rows=2,
         cols=2,
@@ -138,7 +131,6 @@ def create_basin_statistics_plot(basin_stats, year):
         ],
     )
 
-    # Add traces
     fig.add_trace(
         go.Bar(x=basins, y=means, name="Mean", marker_color="lightblue"), row=1, col=1
     )
@@ -212,7 +204,6 @@ def create_zoom_preserving_residual_widget(
     if available_basins is None:
         available_basins = [None] + list(range(len(residuals.ds.basin_names.values)))
 
-    # Create widgets
     year_slider = widgets.IntSlider(
         value=available_years[0] if available_years else 2007,
         min=min(available_years) if available_years else 2007,
@@ -244,7 +235,6 @@ def create_zoom_preserving_residual_widget(
         layout=widgets.Layout(width="200px"),
     )
 
-    # Create output widget
     output = widgets.Output()
 
     # Store the current figure to enable zoom preservation
@@ -261,7 +251,6 @@ def create_zoom_preserving_residual_widget(
 
             if plot_type == "residual":
                 if switching_plot_type or current_fig["fig"] is None:
-                    # Create new FigureWidget for first time or when switching plot types
                     output.clear_output(wait=True)
                     fig = create_interactive_residual_plot(
                         residuals, year, basin_id, preserve_zoom=True
@@ -297,7 +286,6 @@ def create_zoom_preserving_residual_widget(
     basin_dropdown.observe(update_plot, names="value")
     plot_type_dropdown.observe(update_plot, names="value")
 
-    # Create control panel
     controls = widgets.HBox([year_slider, basin_dropdown, plot_type_dropdown])
 
     # Add informational text
@@ -306,17 +294,12 @@ def create_zoom_preserving_residual_widget(
     return widgets.VBox([info_text, controls, output])
 
 
-# Create the interactive widget
-
-
 # Also create a combined view function
 def create_combined_dashboard(residuals, basin_stats, year):
     """Combined dashboard with both residual map and statistics"""
 
-    # Create residual map
     residual_fig = create_interactive_residual_plot(residuals, year, basin_id=None)
 
-    # Create statistics plot
     stats_fig = create_basin_statistics_plot(basin_stats, year)
 
     if residual_fig:
@@ -332,7 +315,7 @@ def create_example_zoom_preserving_dashboard(residuals, basin_stats):
 
     Usage:
     ------
-    # Create the widget
+
     widget = create_example_zoom_preserving_dashboard(residuals, basin_stats)
 
     # Display it
@@ -528,7 +511,6 @@ def create_observations_model_residual_grid(basin_stats, statistic="mean", color
     years = sorted(basin_stats.keys())
     basin_names = list(basin_stats[years[0]].keys())
 
-    # Create subplots with 2 rows and 3 columns
     fig = make_subplots(
         rows=2,
         cols=3,
@@ -565,7 +547,9 @@ def create_observations_model_residual_grid(basin_stats, statistic="mean", color
 
                 # For demonstration, create synthetic observations and Model values
                 # In a real scenario, replace with actual observations and Model data
-                observations_val = residual_val + np.random.normal(0, abs(residual_val) * 0.1)
+                observations_val = residual_val + np.random.normal(
+                    0, abs(residual_val) * 0.1
+                )
                 model_val = residual_val + np.random.normal(0, abs(residual_val) * 0.1)
 
                 observations_values.append(observations_val)
@@ -678,7 +662,6 @@ def create_observations_model_residual_grid(basin_stats, statistic="mean", color
             col=3,
         )
 
-    # Update layout
     fig.update_layout(
         title=f"observations, Model, and Residual {statistic.title()} Statistics by Basin",
         height=800,
@@ -695,7 +678,9 @@ def create_observations_model_residual_grid(basin_stats, statistic="mean", color
     fig.update_yaxes(title_text=f"Model {statistic.title()}", row=1, col=2)
     fig.update_yaxes(title_text=f"Residual {statistic.title()}", row=1, col=3)
 
-    fig.update_yaxes(title_text=f"observations {statistic.title()} (Relative)", row=2, col=1)
+    fig.update_yaxes(
+        title_text=f"observations {statistic.title()} (Relative)", row=2, col=1
+    )
     fig.update_yaxes(title_text=f"Model {statistic.title()} (Relative)", row=2, col=2)
     fig.update_yaxes(
         title_text=f"Residual {statistic.title()} (Relative)", row=2, col=3
@@ -755,7 +740,6 @@ def create_correlation_matrix(basin_stats, year):
     # Calculate correlation matrix
     corr_matrix = df.corr()
 
-    # Create heatmap
     fig = go.Figure(
         data=go.Heatmap(
             z=corr_matrix.values,
@@ -828,7 +812,6 @@ def create_ensemble_time_series_plot(
         # Use first 3-5 models as important by default
         important_models = model_names[: min(5, len(model_names))]
 
-    # Create subplot with one plot per basin
     fig = make_subplots(
         rows=len(basin_list),
         cols=1,
@@ -904,7 +887,9 @@ def create_ensemble_time_series_plot(
                 observations_values = []
                 for year in years:
                     if year in observations_stats[basin_name]:
-                        observations_values.append(observations_stats[basin_name][year][statistic])
+                        observations_values.append(
+                            observations_stats[basin_name][year][statistic]
+                        )
                     else:
                         observations_values.append(np.nan)
 
@@ -1072,7 +1057,9 @@ def update_ensemble_time_series_plot(
                     observations_values = []
                     for year in years:
                         if year in observations_stats[basin_name]:
-                            observations_values.append(observations_stats[basin_name][year][statistic])
+                            observations_values.append(
+                                observations_stats[basin_name][year][statistic]
+                            )
                         else:
                             observations_values.append(np.nan)
 
@@ -1206,7 +1193,6 @@ def create_interactive_ensemble_plot(
     if important_models is None:
         important_models = model_names[: min(5, len(model_names))]
 
-    # Create widgets with improved styling
     stat_dropdown = widgets.Dropdown(
         options=stats_options,
         value="mean",
@@ -1215,7 +1201,6 @@ def create_interactive_ensemble_plot(
         layout=widgets.Layout(width="300px"),
     )
 
-    # Create multi-select widget for important models
     important_models_widget = widgets.SelectMultiple(
         options=model_names,
         value=important_models,
@@ -1223,7 +1208,6 @@ def create_interactive_ensemble_plot(
         layout=widgets.Layout(width="400px", height="150px"),
     )
 
-    # Create output widget for plot
     output = widgets.Output()
 
     # Store current figure to enable zoom preservation
@@ -1234,7 +1218,6 @@ def create_interactive_ensemble_plot(
             current_important = list(important_models_widget.value)
 
             if current_figure["fig"] is None:
-                # Create new FigureWidget for first time
                 output.clear_output(wait=True)
                 fig = create_ensemble_time_series_plot(
                     basin_stats_array,
@@ -1250,7 +1233,6 @@ def create_interactive_ensemble_plot(
 
                 display(fig)
             else:
-                # Update existing figure - we'll need to modify create_ensemble_time_series_plot
                 # to support updating existing FigureWidget
                 fig = update_ensemble_time_series_plot(
                     current_figure["fig"],
@@ -1282,10 +1264,8 @@ def create_interactive_ensemble_plot(
     stat_dropdown.observe(update_plot, names="value")
     important_models_widget.observe(update_plot, names="value")
 
-    # Create control panel
     controls = widgets.HBox([stat_dropdown, important_models_widget])
 
-    # Add informational text
     info_text = widgets.HTML(
         value="<b>Visual Hierarchy:</b> Selected models are highlighted with bolder lines and full opacity. "
         "Other models are shown with thinner lines and reduced opacity for better focus."
@@ -1438,15 +1418,13 @@ def create_advanced_ensemble_comparison_plot(
     if basin_list:
         available_basins = [b for b in available_basins if b in basin_list]
 
-    # Ensure we have valid years
+    # Ensure vars
     if not available_years:
         available_years = list(range(start_year, end_year + 1))
 
-    # Ensure we have valid basins
     if not available_basins:
         available_basins = ["NW"]
 
-    # Create widgets
     stat_dropdown = widgets.Dropdown(
         options=stats_options,
         value="mean",
@@ -1504,7 +1482,6 @@ def create_advanced_ensemble_comparison_plot(
         style={"description_width": "initial"},
     )
 
-    # Create output widget
     output = widgets.Output()
 
     def update_plot(change=None):
@@ -1576,7 +1553,6 @@ def create_advanced_ensemble_comparison_plot(
     ]:
         widget.observe(update_plot, names="value")
 
-    # Layout widgets
     row1 = widgets.HBox(
         [stat_dropdown, year_dropdown, basin_dropdown, compare_mode_dropdown]
     )
@@ -1585,7 +1561,6 @@ def create_advanced_ensemble_comparison_plot(
 
     controls = widgets.VBox([row1, row2, row3])
 
-    # Add title and info
     title = widgets.HTML("<h3>Advanced Ensemble Comparison Analysis</h3>")
     info = widgets.HTML(
         "<b>Tips:</b> Select models to compare against ensemble mean. "
@@ -1618,7 +1593,6 @@ def create_individual_vs_ensemble_plot(
         ensemble_std = ensemble_data["ensemble_std"]
         model_accuracy = ensemble_data["model_accuracy"]
 
-        # Create model accuracy lookup
         model_acc_dict = {m["model_name"]: m for m in model_accuracy}
 
         # Plot ensemble mean line
@@ -1672,7 +1646,6 @@ def create_individual_vs_ensemble_plot(
                     )
                 )
 
-    # Update layout
     fig.update_layout(
         title=f"Model Comparison - {statistic.title()} for {basin} Basin in {year}",
         xaxis_title="Models",
@@ -1783,7 +1756,6 @@ def create_model_timeseries_comparison_plot(
         y=0, line_dash="dot", line_color="blue", annotation_text="Ideal (Zero)"
     )
 
-    # Update layout
     fig.update_layout(
         title=f"Time Series Comparison - {statistic.title()} for {basin} Basin",
         xaxis_title="Year",
@@ -1815,7 +1787,6 @@ def create_accuracy_ranking_plot(accuracy_metrics, statistic, year, basin, model
     # Sort by absolute value (best performance first)
     sorted_models = sorted(model_accuracy, key=lambda x: x["abs_value"])
 
-    # Create bar plot
     fig = go.Figure()
 
     colors = []
@@ -1875,7 +1846,6 @@ def create_accuracy_ranking_plot(accuracy_metrics, statistic, year, basin, model
         annotation_position="bottom right",
     )
 
-    # Update layout
     fig.update_layout(
         title=f"Model Accuracy Ranking - {statistic.title()} for {basin} Basin in {year}",
         xaxis_title="Models (Sorted by Performance)",
@@ -1885,3 +1855,173 @@ def create_accuracy_ranking_plot(accuracy_metrics, statistic, year, basin, model
     )
 
     return fig
+
+
+def create_box_whiskers_plot(
+    residuals, statistic="residual", colors=None, basin_stats=None
+):
+    """
+    Create a box and whiskers plot aggregating across basins for each time period.
+
+    Parameters:
+    -----------
+    residuals : Residual object
+        Contains the residual data with basin_stats
+    statistic : str
+        The statistic to plot ('residual', 'mean', 'std', etc.)
+    colors : dict, optional
+        Color mapping for basins
+
+    Returns:
+    --------
+    plotly figure
+    """
+    import numpy as np
+    import pandas as pd
+    import plotly.express as px
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    # Get the basin statistics
+    basin_stats_data = (
+        residuals.basin_stats if hasattr(residuals, "basin_stats") else basin_stats
+    )
+
+    if basin_stats_data is None:
+        raise ValueError(
+            "No basin statistics available. Either pass basin_stats parameter or ensure residuals object has basin_stats attribute."
+        )
+
+    plot_data = []
+
+    # Get all years and basins
+    years = sorted(basin_stats_data.keys())
+    all_basins = set()
+    for year_data in basin_stats_data.values():
+        all_basins.update(year_data.keys())
+
+    for year in years:
+        year_data = basin_stats_data[year]
+        values = []
+        basin_names = []
+
+        for basin_name, basin_data in year_data.items():
+            if statistic in basin_data:
+                values.append(basin_data[statistic])
+                basin_names.append(basin_name)
+
+        if values:  # Only add if we have data
+            plot_data.append(
+                {"year": year, "values": values, "basin_names": basin_names}
+            )
+
+    fig = go.Figure()
+
+    for data in plot_data:
+        fig.add_trace(
+            go.Box(
+                y=data["values"],
+                x=[str(data["year"])] * len(data["values"]),
+                name=str(data["year"]),
+                boxpoints=False,  # Don't show points on box plot
+                fillcolor="lightblue",
+                line=dict(color="darkblue"),
+                opacity=0.7,
+                showlegend=False,
+            )
+        )
+
+    # Now add individual colored points as scatter plots
+    if colors:
+        # Group data by basin for colored scatter points
+        basin_data = {}
+        for data in plot_data:
+            for i, basin_name in enumerate(data["basin_names"]):
+                if basin_name not in basin_data:
+                    basin_data[basin_name] = {"x": [], "y": [], "years": []}
+                basin_data[basin_name]["x"].append(str(data["year"]))
+                basin_data[basin_name]["y"].append(data["values"][i])
+                basin_data[basin_name]["years"].append(data["year"])
+
+        # Add scatter trace for each basin
+        for basin_name, basin_info in basin_data.items():
+            basin_color = colors.get(basin_name, "gray")
+            fig.add_trace(
+                go.Scatter(
+                    x=basin_info["x"],
+                    y=basin_info["y"],
+                    mode="markers",
+                    name=f"Basin {basin_name}",
+                    marker=dict(
+                        color=basin_color,
+                        size=8,
+                        line=dict(width=1, color="white"),
+                        opacity=0.8,
+                    ),
+                    hovertemplate=f"<b>Basin {basin_name}</b><br>"
+                    + "Year: %{x}<br>"
+                    + f"{statistic.title()}: %{{y:.4f}}<br>"
+                    + "<extra></extra>",
+                    legendgroup="basins",
+                )
+            )
+    else:
+        # If no colors provided, add simple scatter points
+        for data in plot_data:
+            fig.add_trace(
+                go.Scatter(
+                    x=[str(data["year"])] * len(data["values"]),
+                    y=data["values"],
+                    mode="markers",
+                    name="Data Points",
+                    marker=dict(color="blue", size=6),
+                    text=data["basin_names"],
+                    hovertemplate="<b>%{text}</b><br>"
+                    + "Year: %{x}<br>"
+                    + f"{statistic.title()}: %{{y:.4f}}<br>"
+                    + "<extra></extra>",
+                    showlegend=False,
+                )
+            )
+
+    fig.update_layout(
+        title=f"Distribution of {statistic.title()} Across Basins by Year<br><sub>Individual points colored by basin</sub>",
+        xaxis_title="Year",
+        yaxis_title=f"{statistic.title()} Value",
+        width=1200,
+        height=700,
+        template="plotly_white",
+        legend=dict(title="Basins", yanchor="top", y=0.99, xanchor="left", x=1.01),
+    )
+
+    return fig
+
+
+def create_interactive_box_whiskers_plot(residuals, colors=None, basin_stats=None):
+    """
+    Create an interactive box and whiskers plot with dropdown for different statistics.
+    """
+    from ipywidgets import Dropdown, VBox, interact
+
+    statistic_options = [
+        ("Mean", "mean"),
+        ("Standard Deviation", "std"),
+        ("RMS", "rms"),
+        ("Winsorized Mean", "winsorized_mean"),
+        ("Outlier Weighted Mean", "outlier_weighted_mean"),
+        ("Sum", "sum"),
+    ]
+
+    statistic_dropdown = Dropdown(
+        options=statistic_options, value="mean", description="Statistic:"
+    )
+
+    def interactive_box_plot(statistic):
+        """Interactive box plotting function"""
+        fig = create_box_whiskers_plot(
+            residuals, statistic, colors=colors, basin_stats=basin_stats
+        )
+        if fig:
+            fig.show()
+
+    interact(interactive_box_plot, statistic=statistic_dropdown)

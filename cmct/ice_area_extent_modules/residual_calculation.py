@@ -797,7 +797,6 @@ def create_ice_area_extent_dataset_with_precomputed_mask(
 
     logging.info("Creating xarray dataset...")
 
-    # Create dataset
     ds = xr.Dataset(
         {
             "residual": (["time", "y", "x"], residuals_all),
@@ -843,7 +842,7 @@ def create_ice_area_extent_dataset(observations, model, years, basin_polygons_di
         observations, model, basin_polygons_dict, years[0]
     )
 
-    # Create dataset with precomputed mask
+    
     return create_ice_area_extent_dataset_with_precomputed_mask(
         observations, model, years, basin_mask, basin_names, x_coords, y_coords
     )
