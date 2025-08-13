@@ -1,8 +1,13 @@
+import logging
+
 import ipywidgets as widgets
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+# Create module-specific logger
+logger = logging.getLogger(__name__)
 
 
 def rotated_data_year(observations, year):
@@ -2025,3 +2030,169 @@ def create_interactive_box_whiskers_plot(residuals, colors=None, basin_stats=Non
             fig.show()
 
     interact(interactive_box_plot, statistic=statistic_dropdown)
+
+def create_ensemble_box_whiskers_plot(
+    basin_stats_array, model_names, statistic="mean", basin_name="NW", start_year=2007, end_year=2015
+):
+    """
+    Create a box and whiskers plot aggregating across ensemble members for each year.
+
+    Parameters:
+    -----------
+    basin_stats_array : list
+        List of basin statistics for each model
+    model_names : list
+        List of model names
+    statistic : str
+        The statistic to plot ('mean', 'std', 'rms', etc.)
+    basin_name : str
+        The basin to analyze
+
+    Returns:
+    --------
+    plotly figure
+    """
+    import plotly.graph_objects as go
+    import numpy as np
+
+    # Extract data for all models and years
+    plot_data = []
+
+    # Get all available years from first model
+    if basin_stats_array and len(basin_stats_array) > 0:
+        first_model = basin_stats_array[0]
+        years = sorted(first_model.keys())
+    else:
+        years = list(range(start_year, end_year + 1))
+
+    # For each year, collect values across all ensemble members
+    for year in years:
+        year_values = []
+        model_names_for_year = []
+
+        for i, model_stats in enumerate(basin_stats_array):
+            if year in model_stats and basin_name in model_stats[year]:
+                basin_data = model_stats[year][basin_name]
+                if statistic in basin_data and not np.isnan(basin_data[statistic]):
+                    year_values.append(basin_data[statistic])
+                    model_names_for_year.append(
+                        model_names[i] if i < len(model_names) else f"Model_{i}"
+                    )
+
+        if year_values:  # Only add if we have data
+            plot_data.append(
+                {
+                    "year": year,
+                    "values": year_values,
+                    "model_names": model_names_for_year,
+                }
+            )
+
+    # Create the box plot
+    fig = go.Figure()
+
+    # Add box plots for each year (without individual points first)
+    for data in plot_data:
+        fig.add_trace(
+            go.Box(
+                y=data["values"],
+                x=[str(data["year"])] * len(data["values"]),
+                name=str(data["year"]),
+                boxpoints=False,  # Don't show points on box plot
+                fillcolor="lightgreen",
+                line=dict(color="darkgreen"),
+                opacity=0.7,
+                showlegend=False,
+            )
+        )
+
+    # Add individual points as scatter plots colored by model performance
+    for data in plot_data:
+        # Color points based on their value (relative to median)
+        median_val = np.median(data["values"])
+        point_colors = []
+        for val in data["values"]:
+            if val < median_val - np.std(data["values"]):
+                point_colors.append("red")  # Below average
+            elif val > median_val + np.std(data["values"]):
+                point_colors.append("blue")  # Above average
+            else:
+                point_colors.append("orange")  # Average
+
+        fig.add_trace(
+            go.Scatter(
+                x=[str(data["year"])] * len(data["values"]),
+                y=data["values"],
+                mode="markers",
+                name=f"Models {data['year']}",
+                marker=dict(
+                    color=point_colors,
+                    size=6,
+                    line=dict(width=1, color="white"),
+                    opacity=0.8,
+                ),
+                text=data["model_names"],
+                hovertemplate="<b>%{text}</b><br>"
+                + "Year: %{x}<br>"
+                + f"{statistic.title()}: %{{y:.4f}}<br>"
+                + "<extra></extra>",
+                showlegend=False,
+            )
+        )
+
+    # Update layout
+    fig.update_layout(
+        title=f"Ensemble Distribution of {statistic.title()} for Basin {basin_name} by Year<br><sub>Each point represents one ensemble member</sub>",
+        xaxis_title="Year",
+        yaxis_title=f"{statistic.title()} Value",
+        width=1200,
+        height=700,
+        template="plotly_white",
+    )
+
+    return fig
+
+
+def create_interactive_ensemble_box_whiskers_plot(
+    basin_stats_array, model_names, basin_list
+):
+    """
+    Create an interactive ensemble box and whiskers plot with dropdowns for basin and statistic.
+    """
+    from ipywidgets import interact, Dropdown, VBox
+
+    # Create dropdown for statistics
+    statistic_options = [
+        ("Mean", "mean"),
+        ("Standard Deviation", "std"),
+        ("RMS", "rms"),
+        ("Count", "count"),
+        ("Sum", "sum"),
+    ]
+
+    # Create dropdown for basins
+    basin_options = [(basin, basin) for basin in basin_list]
+
+    statistic_dropdown = Dropdown(
+        options=statistic_options, value="mean", description="Statistic:"
+    )
+
+    basin_dropdown = Dropdown(
+        options=basin_options,
+        value=basin_list[0] if basin_list else "NW",
+        description="Basin:",
+    )
+
+    def interactive_ensemble_box_plot(statistic, basin):
+        """Interactive ensemble box plotting function"""
+        fig = create_ensemble_box_whiskers_plot(
+            basin_stats_array, model_names, statistic, basin
+        )
+        if fig:
+            fig.show()
+
+    interact(
+        interactive_ensemble_box_plot,
+        statistic=statistic_dropdown,
+        basin=basin_dropdown,
+    )

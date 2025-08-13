@@ -19,6 +19,84 @@ from scipy import stats
 from cmct.ice_area_extent_modules import shapefile_utils
 
 
+def configure_ice_area_extent_logging(log_level="ALL"):
+    """
+    Configure logging for ice area extent modules.
+
+    Parameters
+    ----------
+    log_level : str
+        Logging level. Options:
+        - "ALL": Show all logs (DEBUG and above)
+        - "ERROR": Show only error messages
+        - "WARNING": Show warnings and errors
+        - "INFO": Show info, warnings, and errors (default behavior)
+
+    Returns
+    -------
+    logging.Logger
+        Configured logger instance
+    """
+    # Map string levels to logging constants
+    level_mapping = {
+        "ALL": logging.DEBUG,
+        "ERROR": logging.ERROR,
+        "WARNING": logging.WARNING,
+        "INFO": logging.INFO,
+    }
+
+    # Validate input
+    if log_level not in level_mapping:
+        raise ValueError(
+            f"Invalid log_level '{log_level}'. Must be one of: {list(level_mapping.keys())}"
+        )
+
+    # Get the numeric level
+    numeric_level = level_mapping[log_level]
+
+    # Configure the root logger for ice area extent modules
+    logger = logging.getLogger("cmct.ice_area_extent")
+    logger.setLevel(numeric_level)
+
+    # Clear existing handlers to avoid duplicates
+    logger.handlers.clear()
+
+    # Create console handler with formatting
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(numeric_level)
+
+    # Create formatter
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    console_handler.setFormatter(formatter)
+
+    # Add handler to logger
+    logger.addHandler(console_handler)
+
+    # Also configure loggers for the ice_area_extent_modules
+    module_names = [
+        "cmct.ice_area_extent_modules.residual_calculation",
+        "cmct.ice_area_extent_modules.plotting_utils",
+        "cmct.ice_area_extent_modules.interpolation",
+        "cmct.ice_area_extent_modules.shapefile_utils",
+        "cmct.ice_area_extent_modules.statistical_utils",
+    ]
+
+    for module_name in module_names:
+        module_logger = logging.getLogger(module_name)
+        module_logger.setLevel(numeric_level)
+        module_logger.handlers.clear()
+        module_logger.addHandler(console_handler)
+        module_logger.propagate = False  # Prevent propagation to root logger
+
+    # Set propagation for main logger
+    logger.propagate = False
+
+    return logger
+
+
 def detect_and_configure_gpu():
     """
     Detect available GPU compute platforms and configure accordingly.

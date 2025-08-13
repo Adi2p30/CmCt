@@ -8,6 +8,9 @@ import numpy as np
 import rioxarray as rxr
 import xarray as xr
 from PIL import Image
+from ..ice_area_extent import configure_ice_area_extent_logging
+# Create module-specific logger
+logger = configure_ice_area_extent_logging()
 
 
 def detect_coordinate_alignment(model_coords, target_coords, tolerance=1e-6):
@@ -29,12 +32,12 @@ def detect_coordinate_alignment(model_coords, target_coords, tolerance=1e-6):
         Dictionary containing alignment information:
         - 'can_align': bool, whether coordinates can be aligned through trimming
         - 'model_start_idx': int,
-        - 'model_end_idx': int, 
+        - 'model_end_idx': int,
         - 'target_start_idx': int
         - 'target_end_idx': int
         - 'offset': float
     """
-        
+
     # Check if both coordinate arrays have uniform spacing
     model_spacing = np.diff(model_coords)
     target_spacing = np.diff(target_coords)
@@ -48,16 +51,14 @@ def detect_coordinate_alignment(model_coords, target_coords, tolerance=1e-6):
     if not np.allclose(model_spacing[0], target_spacing[0], rtol=tolerance):
         return {"can_align": False, "reason": "Different spacing between coordinates"}
 
-
     offset = model_coords[0] - target_coords[0]
-    
+
     model_min, model_max = model_coords[0], model_coords[-1]
     target_min, target_max = target_coords[0], target_coords[-1]
 
     overlap_min = max(model_min, target_min)
     overlap_max = min(model_max, target_max)
 
-    
     if overlap_min >= overlap_max:
         return {"can_align": False, "reason": "No overlap between coordinate ranges"}
 
@@ -101,7 +102,7 @@ def trim_to_align_shapes(model_ds, target_ds, x_dim="x", y_dim="y"):
     dict
         Information about the alignment process
     """
-    logging.warning("Checking coordinate alignment for shape trimming...")
+    logger.warning("Checking coordinate alignment for shape trimming...")
 
     # Get coordinate arrays
     model_x = model_ds[x_dim].values
@@ -122,7 +123,7 @@ def trim_to_align_shapes(model_ds, target_ds, x_dim="x", y_dim="y"):
     }
 
     if not x_alignment["can_align"] or not y_alignment["can_align"]:
-        logging.info(
+        logger.info(
             f"Cannot align coordinates: X - {x_alignment.get('reason', 'Unknown')}, Y - {y_alignment.get('reason', 'Unknown')}"
         )
         return model_ds, alignment_info
@@ -152,18 +153,19 @@ def trim_to_align_shapes(model_ds, target_ds, x_dim="x", y_dim="y"):
             }
         )
 
-        logging.info(
+        logger.info(
             f"Successfully trimmed model from {alignment_info['original_shape']} to {alignment_info['final_shape']}"
         )
-        logging.info(
+        logger.info(
             f"X offset: {x_alignment['offset']:.2f}, Y offset: {y_alignment['offset']:.2f}"
         )
 
         return trimmed_ds, alignment_info
 
     except Exception as e:
-        logging.error(f"Error during trimming: {e}")
+        logger.error(f"Error during trimming: {e}")
         return model_ds, alignment_info
+
 
 def need_for_interpolation(observations, model):
     """
@@ -181,14 +183,16 @@ def need_for_interpolation(observations, model):
     dict
         Dictionary containing:
         - 'needs_processing': bool
-        - 'can_trim': bool 
+        - 'can_trim': bool
         - 'needs_interpolation': bool
         - 'reason': str
     """
     model_x, model_y = model.ds.x.values, model.ds.y.values
     observations_x, observations_y = observations.ds.x.values, observations.ds.y.values
 
-    if np.array_equal(model_x, observations_x) and np.array_equal(model_y, observations_y):
+    if np.array_equal(model_x, observations_x) and np.array_equal(
+        model_y, observations_y
+    ):
         return {
             "needs_processing": False,
             "can_trim": False,
@@ -210,7 +214,7 @@ def need_for_interpolation(observations, model):
         }
 
     if model_x.size != observations_x.size or model_y.size != observations_y.size:
-        logging.warning(
+        logger.warning(
             f"Model x size: {model_x.size}, observations x size: {observations_x.size}, "
             f"Model y size: {model_y.size}, observations y size: {observations_y.size}. "
             "Interpolation needed."
@@ -225,10 +229,16 @@ def need_for_interpolation(observations, model):
     # Check if spacing is different
     model_dx = model_x[1] - model_x[0] if len(model_x) > 1 else 0
     model_dy = model_y[1] - model_y[0] if len(model_y) > 1 else 0
-    observations_dx = observations_x[1] - observations_x[0] if len(observations_x) > 1 else 0
-    observations_dy = observations_y[1] - observations_y[0] if len(observations_y) > 1 else 0
+    observations_dx = (
+        observations_x[1] - observations_x[0] if len(observations_x) > 1 else 0
+    )
+    observations_dy = (
+        observations_y[1] - observations_y[0] if len(observations_y) > 1 else 0
+    )
 
-    if not np.allclose(model_dx, observations_dx) or not np.allclose(model_dy, observations_dy):
+    if not np.allclose(model_dx, observations_dx) or not np.allclose(
+        model_dy, observations_dy
+    ):
         return {
             "needs_processing": True,
             "can_trim": False,
@@ -274,8 +284,8 @@ class Interpolater:
         obs_x = input_ds.x
         obs_y = input_ds.y
 
-        logging.info(f"Input x coordinates: {obs_x.values}")
-        logging.info(f"Input y coordinates: {obs_y.values}")
+        logger.info(f"Input x coordinates: {obs_x.values}")
+        logger.info(f"Input y coordinates: {obs_y.values}")
 
         if self.target_data is not None:
             target_ds = self.target_data.ds
@@ -285,8 +295,8 @@ class Interpolater:
             x_same = np.array_equal(tgt_x.values, obs_x.values)
             y_same = np.array_equal(tgt_y.values, obs_y.values)
 
-            logging.debug(f"Target x coordinates: {tgt_x.values}")
-            logging.debug(f"Target y coordinates: {tgt_y.values}")
+            logger.debug(f"Target x coordinates: {tgt_x.values}")
+            logger.debug(f"Target y coordinates: {tgt_y.values}")
 
             if x_same and y_same:
                 return input_ds
@@ -294,12 +304,10 @@ class Interpolater:
             trimmed_ds, alignment_info = trim_to_align_shapes(input_ds, target_ds)
 
             if alignment_info["trimmed"]:
-                logging.info(
-                    "Successfully aligned datasets through coordinate trimming"
-                )
+                logger.info("Successfully aligned datasets through coordinate trimming")
                 return trimmed_ds
             else:
-                logging.info(
+                logger.info(
                     "Coordinate trimming not possible, falling back to interpolation"
                 )
                 ds_resampled = self._perform_interpolation(input_ds, tgt_x, tgt_y)
@@ -515,7 +523,7 @@ class Interpolater:
                         )
                         ds_resampled_vars[var_name] = var_interp
                     except Exception as e:
-                        logging.warning(
+                        logger.warning(
                             f"Failed to interpolate variable {var_name}: {e}"
                         )
                         ds_resampled_vars[var_name] = var_data
@@ -535,4 +543,3 @@ class Interpolater:
             )
 
         return ds_resampled
-

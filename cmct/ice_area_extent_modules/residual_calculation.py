@@ -8,6 +8,11 @@ import pandas as pd
 import xarray as xr
 from numba import jit, prange
 
+from ..ice_area_extent import configure_ice_area_extent_logging
+
+# Create module-specific logger
+logger = configure_ice_area_extent_logging()
+
 
 # GPU Configuration Detection
 def _detect_gpu_config():
@@ -61,7 +66,9 @@ if _GPU_CONFIG["cuda_available"]:
 
 
 @jit(nopython=True, parallel=False, cache=True)
-def compute_residuals_and_stats(observations_values, model_values, x_indices, y_indices):
+def compute_residuals_and_stats(
+    observations_values, model_values, x_indices, y_indices
+):
     n_points = len(x_indices)
     residuals = np.full(n_points, np.nan, dtype=np.float32)
 
@@ -98,7 +105,10 @@ if _GPU_CONFIG["cuda_available"]:
             x_i = x_indices[idx]
             y_i = y_indices[idx]
 
-            if x_i < observations_values.shape[1] and y_i < observations_values.shape[0]:
+            if (
+                x_i < observations_values.shape[1]
+                and y_i < observations_values.shape[0]
+            ):
                 observations_val = observations_values[y_i, x_i]
                 model_val = model_values[y_i, x_i]
 
@@ -113,7 +123,9 @@ if _GPU_CONFIG["cuda_available"]:
                     cuda.atomic.add(stats, 3, residual * residual)  # sq_sum
 
 
-def gpu_compute_residuals_and_stats(observations_values, model_values, x_indices, y_indices):
+def gpu_compute_residuals_and_stats(
+    observations_values, model_values, x_indices, y_indices
+):
     """GPU-accelerated residual computation."""
     if not _GPU_CONFIG["use_gpu"] or len(x_indices) < 10000:
         # Use CPU for small datasets
@@ -131,10 +143,14 @@ def gpu_compute_residuals_and_stats(observations_values, model_values, x_indices
         pass
 
     # CPU fallback
-    return compute_residuals_and_stats(observations_values, model_values, x_indices, y_indices)
+    return compute_residuals_and_stats(
+        observations_values, model_values, x_indices, y_indices
+    )
 
 
-def _cuda_compute_residuals_and_stats(observations_values, model_values, x_indices, y_indices):
+def _cuda_compute_residuals_and_stats(
+    observations_values, model_values, x_indices, y_indices
+):
     """CUDA implementation of residual computation."""
     n_points = len(x_indices)
 
@@ -243,10 +259,10 @@ def prepare_basin_polygons(basin_polygons_dict, target_crs="EPSG:3413"):
             all_y.extend(coords[:, 1])
             basin_lengths.append(len(coords))
 
-            logging.info(f"Transformed basin {name}: {len(coords)} points")
+            logger.info(f"Transformed basin {name}: {len(coords)} points")
 
         except Exception as e:
-            logging.error(f"Failed to transform basin {name}: {e}")
+            logger.error(f"Failed to transform basin {name}: {e}")
             continue
 
     return (
@@ -420,13 +436,13 @@ def create_basin_mask_debug(
     n_basins = len(basin_lengths)
     basin_mask = np.full((n_y, n_x), -1, dtype=np.int32)
 
-    logging.info(f"Creating basin mask for {n_x} x {n_y} grid with {n_basins} basins")
+    logger.info(f"Creating basin mask for {n_x} x {n_y} grid with {n_basins} basins")
 
     # Debug: Print coordinate ranges
-    logging.info(
+    logger.info(
         f"Data coordinates: X=[{x_coords.min():.1f}, {x_coords.max():.1f}], Y=[{y_coords.min():.1f}, {y_coords.max():.1f}]"
     )
-    logging.info(
+    logger.info(
         f"Basin polygon coordinates: X=[{basin_polygons_x.min():.1f}, {basin_polygons_x.max():.1f}], Y=[{basin_polygons_y.min():.1f}, {basin_polygons_y.max():.1f}]"
     )
 
@@ -435,7 +451,7 @@ def create_basin_mask_debug(
 
     for i in range(n_y):
         if i % 500 == 0:  # Progress indicator
-            logging.info(f"Processing row {i}/{n_y}")
+            logger.info(f"Processing row {i}/{n_y}")
 
         for j in range(n_x):
             x = x_coords[j]
@@ -454,7 +470,7 @@ def create_basin_mask_debug(
 
                 polygon_start = polygon_end
 
-    logging.info(
+    logger.info(
         f"Basin assignment complete: {points_assigned}/{total_points} points assigned to basins ({100 * points_assigned / total_points:.1f}%)"
     )
 
@@ -487,7 +503,11 @@ if _GPU_CONFIG["cuda_available"]:
         """CUDA kernel for residual computation."""
         t, i, j = cuda.grid(3)
 
-        if t < observations_data.shape[0] and i < observations_data.shape[1] and j < observations_data.shape[2]:
+        if (
+            t < observations_data.shape[0]
+            and i < observations_data.shape[1]
+            and j < observations_data.shape[2]
+        ):
             observations_val = observations_data[t, i, j]
             model_val = model_data[t, i, j]
 
@@ -600,7 +620,7 @@ def compute_basin_mask_once(observations, model, basin_polygons_dict, year=None)
     tuple
         (basin_mask, basin_names, x_coords, y_coords)
     """
-    logging.info("Computing basin mask once for all ensemble members...")
+    logger.info("Computing basin mask once for all ensemble members...")
 
     # Prepare basin data
     basin_names, basin_polygons_x, basin_polygons_y, basin_lengths = (
@@ -615,32 +635,32 @@ def compute_basin_mask_once(observations, model, basin_polygons_dict, year=None)
     x_coords = model_sample.x.values.astype(np.float32)
     y_coords = model_sample.y.values.astype(np.float32)
 
-    logging.info(f"Grid dimensions: {len(y_coords)} x {len(x_coords)}")
-    logging.info(f"Using year {year} for basin mask creation")
+    logger.info(f"Grid dimensions: {len(y_coords)} x {len(x_coords)}")
+    logger.info(f"Using year {year} for basin mask creation")
 
     # Create basin mask
-    logging.info("Creating basin mask...")
+    logger.info("Creating basin mask...")
     try:
         basin_mask = gpu_create_basin_mask_optimized(
             x_coords, y_coords, basin_polygons_x, basin_polygons_y, basin_lengths
         )
     except Exception as e:
-        logging.error(f"Error in GPU basin mask creation: {e}")
-        logging.info("Falling back to CPU version...")
+        logger.error(f"Error in GPU basin mask creation: {e}")
+        logger.info("Falling back to CPU version...")
         try:
             basin_mask = create_basin_mask_optimized(
                 x_coords, y_coords, basin_polygons_x, basin_polygons_y, basin_lengths
             )
         except Exception as e2:
-            logging.error(f"Error in optimized basin mask creation: {e2}")
-            logging.info("Falling back to debug version...")
+            logger.error(f"Error in optimized basin mask creation: {e2}")
+            logger.info("Falling back to debug version...")
             basin_mask = create_basin_mask_debug(
                 x_coords, y_coords, basin_polygons_x, basin_polygons_y, basin_lengths
             )
 
     # Log basin assignment statistics
     unique_basins = np.unique(basin_mask)
-    logging.info(f"Basin assignment complete. Unique basin IDs: {unique_basins}")
+    logger.info(f"Basin assignment complete. Unique basin IDs: {unique_basins}")
 
     for basin_id in unique_basins:
         if basin_id >= 0:
@@ -648,15 +668,15 @@ def compute_basin_mask_once(observations, model, basin_polygons_dict, year=None)
             basin_name = (
                 basin_names[basin_id] if basin_id < len(basin_names) else "Unknown"
             )
-            logging.info(f"  Basin {basin_id} ({basin_name}): {count} points")
+            logger.info(f"  Basin {basin_id} ({basin_name}): {count} points")
         else:
             count = np.sum(basin_mask == basin_id)
-            logging.info(f"  Unassigned points: {count}")
+            logger.info(f"  Unassigned points: {count}")
 
     assigned_points = np.sum(basin_mask >= 0)
     total_points = basin_mask.size
     assignment_rate = 100 * assigned_points / total_points
-    logging.info(
+    logger.info(
         f"Basin assignment rate: {assigned_points}/{total_points} ({assignment_rate:.1f}%)"
     )
 
@@ -692,7 +712,7 @@ def create_ice_area_extent_dataset_with_precomputed_mask(
         Dataset with dimensions (time, y, x) and variables for residuals,
         basin assignments, and ice masks
     """
-    logging.info("Creating ice_area_extent dataset with precomputed basin mask...")
+    logger.info("Creating ice_area_extent dataset with precomputed basin mask...")
     start_time = time.time()
 
     # Prepare observations data for all years
@@ -702,7 +722,9 @@ def create_ice_area_extent_dataset_with_precomputed_mask(
 
         # Use xarray's interpolation to ensure exact coordinate matching
         # Interpolate observations data to the exact coordinates used for the basin mask
-        observations_interp = observations_year.ice_mask.interp(x=x_coords, y=y_coords, method="linear")
+        observations_interp = observations_year.ice_mask.interp(
+            x=x_coords, y=y_coords, method="linear"
+        )
         observations_aligned = observations_interp.values.astype(np.float32)
 
         # Handle any NaN values that might result from interpolation
@@ -711,7 +733,7 @@ def create_ice_area_extent_dataset_with_precomputed_mask(
         observations_data_list.append(observations_aligned)
 
     observations_data_all = np.stack(observations_data_list, axis=0)
-    logging.info(f"observations data shape: {observations_data_all.shape}")
+    logger.info(f"observations data shape: {observations_data_all.shape}")
 
     # Prepare model data for all years
     model_data_list = []
@@ -734,18 +756,18 @@ def create_ice_area_extent_dataset_with_precomputed_mask(
 
     # Check if model data needs to be transposed to match observations data dimension order
     if model_data_all.shape != observations_data_all.shape:
-        logging.info(
+        logger.info(
             f"Transposing model data from {model_data_all.shape} to match observations shape {observations_data_all.shape}"
         )
         # Transpose the spatial dimensions (keep time dimension as first)
         model_data_all = model_data_all.transpose(0, 2, 1)
 
-    logging.info(f"Model data shape after alignment: {model_data_all.shape}")
-    logging.info(f"Basin mask shape: {basin_mask.shape}")
+    logger.info(f"Model data shape after alignment: {model_data_all.shape}")
+    logger.info(f"Basin mask shape: {basin_mask.shape}")
 
     # Ensure all data arrays have consistent shapes
     if observations_data_all.shape != model_data_all.shape:
-        logging.error(
+        logger.error(
             f"Shape mismatch after transpose: observations {observations_data_all.shape} vs Model {model_data_all.shape}"
         )
         raise ValueError(
@@ -753,17 +775,19 @@ def create_ice_area_extent_dataset_with_precomputed_mask(
         )
 
     if observations_data_all.shape[1:] != basin_mask.shape:
-        logging.error(
+        logger.error(
             f"Basin mask shape mismatch: Data {observations_data_all.shape[1:]} vs Mask {basin_mask.shape}"
         )
         raise ValueError(
             f"Basin mask shape mismatch: Data {observations_data_all.shape[1:]} vs Mask {basin_mask.shape}"
         )
 
-    logging.info("Computing residuals...")
-    residuals_all = gpu_compute_residuals_vectorized(observations_data_all, model_data_all)
+    logger.info("Computing residuals...")
+    residuals_all = gpu_compute_residuals_vectorized(
+        observations_data_all, model_data_all
+    )
 
-    logging.info("Computing statistics...")
+    logger.info("Computing statistics...")
     stats_array = compute_stats_vectorized(residuals_all)
 
     # Broadcast basin mask to all years
@@ -795,7 +819,7 @@ def create_ice_area_extent_dataset_with_precomputed_mask(
         }
         stats_list.append(stats)
 
-    logging.info("Creating xarray dataset...")
+    logger.info("Creating xarray dataset...")
 
     ds = xr.Dataset(
         {
@@ -825,7 +849,7 @@ def create_ice_area_extent_dataset_with_precomputed_mask(
             ds[f"stats_{col}"] = ("time", stats_df[col].values)
 
     end_time = time.time()
-    logging.info(f"Dataset creation completed in {end_time - start_time:.2f} seconds")
+    logger.info(f"Dataset creation completed in {end_time - start_time:.2f} seconds")
 
     return ds
 
@@ -842,7 +866,6 @@ def create_ice_area_extent_dataset(observations, model, years, basin_polygons_di
         observations, model, basin_polygons_dict, years[0]
     )
 
-    
     return create_ice_area_extent_dataset_with_precomputed_mask(
         observations, model, years, basin_mask, basin_names, x_coords, y_coords
     )
