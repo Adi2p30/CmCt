@@ -892,6 +892,22 @@ def calculate_basin_statistics_with_mask(observations, basin_mask, basin_names=N
         else:
             obs_data = observations.ds.ice_mask.isel(time=time_idx).values
 
+        # Check if data dimensions match basin_mask and transpose if necessary
+        if obs_data.shape != basin_mask.shape:
+            logger.debug(
+                f"Data shape {obs_data.shape} doesn't match basin_mask shape {basin_mask.shape}. Attempting to transpose."
+            )
+            if obs_data.shape == (basin_mask.shape[1], basin_mask.shape[0]):
+                obs_data = obs_data.T
+                logger.debug(f"Transposed data to shape {obs_data.shape}")
+            else:
+                logger.error(
+                    f"Cannot reshape data from {obs_data.shape} to match basin_mask {basin_mask.shape}"
+                )
+                raise ValueError(
+                    f"Data spatial dimensions {obs_data.shape} cannot be matched to basin_mask {basin_mask.shape}"
+                )
+
         logger.debug(f"Processing year {year} (time index {time_idx})")
 
         for basin_idx, basin_name in enumerate(basin_names):
