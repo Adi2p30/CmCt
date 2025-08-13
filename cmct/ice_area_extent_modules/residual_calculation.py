@@ -865,7 +865,10 @@ def create_ice_area_extent_dataset(observations, model, years, basin_polygons_di
     basin_mask, basin_names, x_coords, y_coords = compute_basin_mask_once(
         observations, model, basin_polygons_dict, years[0]
     )
-
+    ()
     return create_ice_area_extent_dataset_with_precomputed_mask(
         observations, model, years, basin_mask, basin_names, x_coords, y_coords
-    )
+    ), basin_mask
+    
+    
+

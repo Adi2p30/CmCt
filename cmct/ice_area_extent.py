@@ -825,6 +825,163 @@ def calculate_basin_statistics(residuals):
     return basin_stats
 
 
+def calculate_basin_statistics_with_mask(observations, basin_mask, basin_names=None):
+    """
+    Calculate basin statistics for observations data using a basin mask.
+
+    This function assigns each point to a basin based on the basin mask and then
+    calculates the same statistics as calculate_basin_statistics.
+
+    Parameters
+    ----------
+    observations : observationsice_area_extent or Modelice_area_extent
+        Input data object with ds attribute containing xarray Dataset.
+    basin_mask : numpy.ndarray
+        2D array where each point is assigned a basin index (or -1 if not in any basin).
+        Shape should match the spatial dimensions of observations data.
+    basin_names : list, optional
+        List of basin names corresponding to basin indices. If None, will try to get
+        from observations dataset or use default indices.
+
+    Returns
+    -------
+    dict
+        Dictionary with structure: {year: {basin_name: {stat_name: value}}}
+        Statistics include: count, mean, std, min, max, rms, rss, sum,
+        winsorized_mean, outlier_weighted_mean
+    """
+    logger = logging.getLogger(__name__)
+    logger.info("Starting basin statistics calculation with mask")
+
+    # Get basin names - try from observations dataset first, then from parameter
+    if basin_names is None:
+        if (
+            hasattr(observations.ds, "basin_names")
+            and "basin_names" in observations.ds.coords
+        ):
+            basin_names = observations.ds.basin_names.values
+        else:
+            # Get unique basin indices from mask (excluding -1)
+            unique_basins = np.unique(basin_mask)
+            unique_basins = unique_basins[unique_basins >= 0]  # Remove -1 values
+            basin_names = [f"Basin_{i}" for i in unique_basins]
+
+    basin_stats = {}
+    times = observations.time.values
+
+    # Determine the time dimension name
+    time_dim = "time"
+    if (
+        hasattr(observations, "ds")
+        and "year" in observations.ds.dims
+        and "year" in observations.ds.coords
+    ):
+        time_dim = "year"
+
+    logger.info(
+        f"Processing {len(times)} time steps and {len(basin_names)} basins using time dimension '{time_dim}'"
+    )
+
+    for time_idx, year in enumerate(times):
+        if year not in basin_stats:
+            basin_stats[year] = {}
+
+        # Get observations data for this time step - handle different time dimension names
+        if time_dim == "year":
+            obs_data = observations.ds.ice_mask.isel(year=time_idx).values
+        else:
+            obs_data = observations.ds.ice_mask.isel(time=time_idx).values
+
+        logger.debug(f"Processing year {year} (time index {time_idx})")
+
+        for basin_idx, basin_name in enumerate(basin_names):
+            # Create mask for this basin
+            basin_points_mask = basin_mask == basin_idx
+
+            # Extract data points that belong to this basin
+            basin_obs_data = obs_data[basin_points_mask]
+
+            # Remove invalid data (NaN values)
+            valid_data = basin_obs_data[~np.isnan(basin_obs_data)]
+
+            if len(valid_data) > 0:
+                logger.debug(
+                    f"  Basin {basin_name}: {len(valid_data)} valid data points"
+                )
+
+                # Calculate basic statistics (same as calculate_basin_statistics)
+                mean_val = np.mean(valid_data)
+                std_val = np.std(valid_data)
+
+                basic_stats = {
+                    "count": len(valid_data),
+                    "mean": mean_val,
+                    "std": std_val,
+                    "min": np.min(valid_data),
+                    "max": np.max(valid_data),
+                    "rms": np.sqrt(np.mean(np.square(valid_data))),
+                    "rss": np.sum(np.square(valid_data)),
+                    "sum": np.sum(valid_data),
+                }
+
+                # Calculate advanced statistics (same as calculate_basin_statistics)
+                # Calculate winsorized mean (trimmed mean with 5% limits)
+                zero_fraction = np.sum(valid_data == 0) / len(valid_data)
+
+                if zero_fraction > 0.9:  # If more than 90% are zeros
+                    non_zero_data = valid_data[valid_data != 0]
+                    if len(non_zero_data) > 0:
+                        if len(non_zero_data) > 10:
+                            winsorized_nonzero = stats.mstats.winsorize(
+                                non_zero_data, limits=0.05
+                            )
+                            winsorized_mean_nonzero = float(np.mean(winsorized_nonzero))
+                        else:
+                            winsorized_mean_nonzero = np.mean(non_zero_data)
+                        winsorized_mean = winsorized_mean_nonzero * (1 - zero_fraction)
+                    else:
+                        winsorized_mean = 0.0
+                else:
+                    winsorized_data = stats.mstats.winsorize(valid_data, limits=0.05)
+                    winsorized_mean = float(np.mean(winsorized_data))
+
+                median_val = np.median(valid_data)
+
+                if zero_fraction > 0.8:  # For zero-heavy data
+                    # Give more reasonable weights to avoid extreme values
+                    weights = 1.0 / (np.abs(valid_data) + 0.01)  # Larger epsilon
+                    weights = np.minimum(weights, 100.0)
+                    outlier_weighted_mean = np.average(valid_data, weights=weights)
+                else:
+                    weights = 1.0 / (np.abs(valid_data - median_val) + 1e-6)
+                    weights = np.minimum(weights, 1000.0)
+                    outlier_weighted_mean = np.average(valid_data, weights=weights)
+
+                # Combine basic stats with advanced stats
+                basin_stats[year][basin_name] = {
+                    **basic_stats,
+                    "winsorized_mean": winsorized_mean,
+                    "outlier_weighted_mean": outlier_weighted_mean,
+                }
+            else:
+                logger.warning(f"  Basin {basin_name}: No valid data for year {year}")
+                basin_stats[year][basin_name] = {
+                    "count": 0,
+                    "mean": np.nan,
+                    "std": np.nan,
+                    "min": np.nan,
+                    "max": np.nan,
+                    "rms": np.nan,
+                    "rss": np.nan,
+                    "sum": np.nan,
+                    "winsorized_mean": np.nan,
+                    "outlier_weighted_mean": np.nan,
+                }
+
+    logger.info("Basin statistics calculation with mask completed")
+    return basin_stats
+
+
 def format_basin_stats(basin_stats):
     """
     Format basin statistics in a readable format.

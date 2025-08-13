@@ -485,7 +485,9 @@ def create_relative_time_series_plot(basin_stats, statistic="mean", colors=None)
     return fig
 
 
-def create_observations_model_residual_grid(basin_stats, statistic="mean", colors=None):
+def create_observations_model_residual_grid(
+    basin_stats, obs_stats, mod_stats, statistic="mean", colors=None
+):
     """
     Create a 2x3 grid of plots showing observations, Model, and Residual statistics
     First row: Standard plots
@@ -550,15 +552,29 @@ def create_observations_model_residual_grid(basin_stats, statistic="mean", color
                 residual_val = basin_stats[year][basin_name][statistic]
                 residual_values.append(residual_val)
 
-                # For demonstration, create synthetic observations and Model values
-                # In a real scenario, replace with actual observations and Model data
-                observations_val = residual_val + np.random.normal(
-                    0, abs(residual_val) * 0.1
-                )
-                model_val = residual_val + np.random.normal(0, abs(residual_val) * 0.1)
+                # Use actual observations data if available
+                if (
+                    obs_stats
+                    and year in obs_stats
+                    and basin_name in obs_stats[year]
+                    and obs_stats[year][basin_name]["count"] > 0
+                ):
+                    observations_val = obs_stats[year][basin_name][statistic]
+                    observations_values.append(observations_val)
+                else:
+                    observations_values.append(None)
 
-                observations_values.append(observations_val)
-                model_values.append(model_val)
+                # Use actual model data if available
+                if (
+                    mod_stats
+                    and year in mod_stats
+                    and basin_name in mod_stats[year]
+                    and mod_stats[year][basin_name]["count"] > 0
+                ):
+                    model_val = mod_stats[year][basin_name][statistic]
+                    model_values.append(model_val)
+                else:
+                    model_values.append(None)
             else:
                 observations_values.append(None)
                 model_values.append(None)
@@ -2031,8 +2047,14 @@ def create_interactive_box_whiskers_plot(residuals, colors=None, basin_stats=Non
 
     interact(interactive_box_plot, statistic=statistic_dropdown)
 
+
 def create_ensemble_box_whiskers_plot(
-    basin_stats_array, model_names, statistic="mean", basin_name="NW", start_year=2007, end_year=2015
+    basin_stats_array,
+    model_names,
+    statistic="mean",
+    basin_name="NW",
+    start_year=2007,
+    end_year=2015,
 ):
     """
     Create a box and whiskers plot aggregating across ensemble members for each year.
@@ -2052,8 +2074,8 @@ def create_ensemble_box_whiskers_plot(
     --------
     plotly figure
     """
-    import plotly.graph_objects as go
     import numpy as np
+    import plotly.graph_objects as go
 
     # Extract data for all models and years
     plot_data = []
@@ -2159,7 +2181,7 @@ def create_interactive_ensemble_box_whiskers_plot(
     """
     Create an interactive ensemble box and whiskers plot with dropdowns for basin and statistic.
     """
-    from ipywidgets import interact, Dropdown, VBox
+    from ipywidgets import Dropdown, VBox, interact
 
     # Create dropdown for statistics
     statistic_options = [
